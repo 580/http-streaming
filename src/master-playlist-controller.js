@@ -38,7 +38,8 @@ const loaderStats = [
   'mediaRequestsTimedout',
   'mediaRequestsErrored',
   'mediaTransferDuration',
-  'mediaBytesTransferred'
+  'mediaBytesTransferred',
+  'mediaAppends'
 ];
 const sumLoaderStat = function(stat) {
   return this.audioSegmentLoader_[stat] +
@@ -143,12 +144,17 @@ export class MasterPlaylistController extends videojs.EventTarget {
       enableLowInitialPlaylist,
       sourceType,
       cacheEncryptionKeys,
-      handlePartialData,
       experimentalBufferBasedABR
     } = options;
 
     if (!src) {
       throw new Error('A non-empty playlist URL or JSON manifest string is required');
+    }
+
+    let { maxPlaylistRetries } = options;
+
+    if (maxPlaylistRetries === null || typeof maxPlaylistRetries === 'undefined') {
+      maxPlaylistRetries = Infinity;
     }
 
     Vhs = externVhs;
@@ -160,6 +166,7 @@ export class MasterPlaylistController extends videojs.EventTarget {
     this.sourceType_ = sourceType;
     this.useCueTags_ = useCueTags;
     this.blacklistDuration = blacklistDuration;
+    this.maxPlaylistRetries = maxPlaylistRetries;
     this.enableLowInitialPlaylist = enableLowInitialPlaylist;
     if (this.useCueTags_) {
       this.cueTagsTrack_ = this.tech_.addTextTrack(
@@ -172,6 +179,7 @@ export class MasterPlaylistController extends videojs.EventTarget {
     this.requestOptions_ = {
       withCredentials,
       handleManifestRedirects,
+      maxPlaylistRetries,
       timeout: null
     };
 
@@ -223,7 +231,6 @@ export class MasterPlaylistController extends videojs.EventTarget {
       sourceType: this.sourceType_,
       inbandTextTracks: this.inbandTextTracks_,
       cacheEncryptionKeys,
-      handlePartialData,
       sourceUpdater: this.sourceUpdater_,
       timelineChangeController: this.timelineChangeController_
     };
@@ -272,6 +279,7 @@ export class MasterPlaylistController extends videojs.EventTarget {
     // mediaRequestsErrored_
     // mediaTransferDuration_
     // mediaBytesTransferred_
+    // mediaAppends_
     loaderStats.forEach((stat) => {
       this[stat + '_'] = sumLoaderStat.bind(this, stat);
     });
@@ -289,6 +297,46 @@ export class MasterPlaylistController extends videojs.EventTarget {
     } else {
       this.masterPlaylistLoader_.load();
     }
+
+    this.timeToLoadedData__ = -1;
+    this.mainAppendsToLoadedData__ = -1;
+    this.audioAppendsToLoadedData__ = -1;
+
+    const event = this.tech_.preload() === 'none' ? 'play' : 'loadstart';
+
+    // start the first frame timer on loadstart or play (for preload none)
+    this.tech_.one(event, () => {
+      const timeToLoadedDataStart = Date.now();
+
+      this.tech_.one('loadeddata', () => {
+        this.timeToLoadedData__ = Date.now() - timeToLoadedDataStart;
+        this.mainAppendsToLoadedData__ = this.mainSegmentLoader_.mediaAppends;
+        this.audioAppendsToLoadedData__ = this.audioSegmentLoader_.mediaAppends;
+      });
+    });
+  }
+
+  mainAppendsToLoadedData_() {
+    return this.mainAppendsToLoadedData__;
+  }
+
+  audioAppendsToLoadedData_() {
+    return this.audioAppendsToLoadedData__;
+  }
+
+  appendsToLoadedData_() {
+    const main = this.mainAppendsToLoadedData_();
+    const audio = this.audioAppendsToLoadedData_();
+
+    if (main === -1 || audio === -1) {
+      return -1;
+    }
+
+    return main + audio;
+  }
+
+  timeToLoadedData_() {
+    return this.timeToLoadedData__;
   }
 
   /**
@@ -808,16 +856,10 @@ export class MasterPlaylistController extends videojs.EventTarget {
    * removing already buffered content
    *
    * @private
+   * @deprecated
    */
   smoothQualityChange_(media = this.selectPlaylist()) {
-    if (media === this.masterPlaylistLoader_.media()) {
-      return;
-    }
-
-    this.switchMedia_(media, 'smooth-quality');
-
-    this.mainSegmentLoader_.resetLoader();
-    // don't need to reset audio as it is reset when media changes
+    this.fastQualityChange_(media);
   }
 
   /**
@@ -1003,9 +1045,10 @@ export class MasterPlaylistController extends videojs.EventTarget {
     let isEndOfStream = this.mainSegmentLoader_.ended_;
 
     if (this.mediaTypes_.AUDIO.activePlaylistLoader) {
+      const mainMediaInfo = this.mainSegmentLoader_.getCurrentMediaInfo_();
+
       // if the audio playlist loader exists, then alternate audio is active
-      if (!this.mainSegmentLoader_.currentMediaInfo_ ||
-          this.mainSegmentLoader_.currentMediaInfo_.hasVideo) {
+      if (!mainMediaInfo || mainMediaInfo.hasVideo) {
         // if we do not know if the main segment loader contains video yet or if we
         // definitively know the main segment loader contains video, then we need to wait
         // for both main and audio segment loaders to call endOfStream
@@ -1098,6 +1141,8 @@ export class MasterPlaylistController extends videojs.EventTarget {
       return;
     }
 
+    currentPlaylist.playlistErrors_++;
+
     const playlists = this.masterPlaylistLoader_.master.playlists;
     const enabledPlaylists = playlists.filter(isEnabled);
     const isFinalRendition = enabledPlaylists.length === 1 && enabledPlaylists[0] === currentPlaylist;
@@ -1145,7 +1190,16 @@ export class MasterPlaylistController extends videojs.EventTarget {
     }
 
     // Blacklist this playlist
-    currentPlaylist.excludeUntil = Date.now() + (blacklistDuration * 1000);
+    let excludeUntil;
+
+    if (currentPlaylist.playlistErrors_ > this.maxPlaylistRetries) {
+      excludeUntil = Infinity;
+    } else {
+      excludeUntil = Date.now() + (blacklistDuration * 1000);
+    }
+
+    currentPlaylist.excludeUntil = excludeUntil;
+
     if (error.reason) {
       currentPlaylist.lastExcludeReason_ = error.reason;
     }
@@ -1566,9 +1620,13 @@ export class MasterPlaylistController extends videojs.EventTarget {
 
   areMediaTypesKnown_() {
     const usingAudioLoader = !!this.mediaTypes_.AUDIO.activePlaylistLoader;
+    const hasMainMediaInfo = !!this.mainSegmentLoader_.getCurrentMediaInfo_();
+    // if we are not using an audio loader, then we have audio media info
+    // otherwise check on the segment loader.
+    const hasAudioMediaInfo = !usingAudioLoader ? true : !!this.audioSegmentLoader_.getCurrentMediaInfo_();
 
     // one or both loaders has not loaded sufficently to get codecs
-    if (!this.mainSegmentLoader_.currentMediaInfo_ || (usingAudioLoader && !this.audioSegmentLoader_.currentMediaInfo_)) {
+    if (!hasMainMediaInfo || !hasAudioMediaInfo) {
       return false;
     }
 
@@ -1577,8 +1635,8 @@ export class MasterPlaylistController extends videojs.EventTarget {
 
   getCodecsOrExclude_() {
     const media = {
-      main: this.mainSegmentLoader_.currentMediaInfo_ || {},
-      audio: this.audioSegmentLoader_.currentMediaInfo_ || {}
+      main: this.mainSegmentLoader_.getCurrentMediaInfo_() || {},
+      audio: this.audioSegmentLoader_.getCurrentMediaInfo_() || {}
     };
 
     // set "main" media equal to video

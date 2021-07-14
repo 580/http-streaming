@@ -17,7 +17,6 @@ export const handleData_ = (event, transmuxedData, callback) => {
     metadata
   });
 
-  // right now, boxes will come back from partial transmuxer, data from full
   const boxes = event.data.segment.boxes || {
     data: event.data.segment.data
   };
@@ -71,7 +70,6 @@ export const processTransmux = (options) => {
     bytes,
     audioAppendStart,
     gopsToAlignWith,
-    isPartial,
     remux,
     onData,
     onTrackInfo,
@@ -83,10 +81,10 @@ export const processTransmux = (options) => {
     onCaptions,
     onDone,
     onEndedTimeline,
+    onTransmuxerLog,
     isEndOfTimeline
   } = options;
   const transmuxedData = {
-    isPartial,
     buffer: []
   };
   let waitForEndedTimelineEvent = isEndOfTimeline;
@@ -127,6 +125,9 @@ export const processTransmux = (options) => {
     if (event.data.action === 'endedtimeline') {
       waitForEndedTimelineEvent = false;
       onEndedTimeline();
+    }
+    if (event.data.action === 'log') {
+      onTransmuxerLog(event.data.log);
     }
 
     // wait for the transmuxed event since we may have audio and video
@@ -197,13 +198,12 @@ export const processTransmux = (options) => {
     );
   }
 
-  // even if we didn't push any bytes, we have to make sure we flush in case we reached
-  // the end of the segment
-  transmuxer.postMessage({ action: isPartial ? 'partialFlush' : 'flush' });
-
   if (isEndOfTimeline) {
     transmuxer.postMessage({ action: 'endTimeline' });
   }
+  // even if we didn't push any bytes, we have to make sure we flush in case we reached
+  // the end of the segment
+  transmuxer.postMessage({ action: 'flush' });
 };
 
 export const dequeue = (transmuxer) => {
