@@ -1,4 +1,6 @@
 import TransmuxWorker from 'worker!./transmuxer-worker.js';
+import videojs from 'video.js';
+import { segmentInfoPayload } from './segment-loader';
 
 export const handleData_ = (event, transmuxedData, callback) => {
   const {
@@ -17,7 +19,6 @@ export const handleData_ = (event, transmuxedData, callback) => {
     metadata
   });
 
-  // right now, boxes will come back from partial transmuxer, data from full
   const boxes = event.data.segment.boxes || {
     data: event.data.segment.data
   };
@@ -71,7 +72,6 @@ export const processTransmux = (options) => {
     bytes,
     audioAppendStart,
     gopsToAlignWith,
-    isPartial,
     remux,
     onData,
     onTrackInfo,
@@ -83,10 +83,12 @@ export const processTransmux = (options) => {
     onCaptions,
     onDone,
     onEndedTimeline,
-    isEndOfTimeline
+    onTransmuxerLog,
+    isEndOfTimeline,
+    segment,
+    triggerSegmentEventFn
   } = options;
   const transmuxedData = {
-    isPartial,
     buffer: []
   };
   let waitForEndedTimelineEvent = isEndOfTimeline;
@@ -128,6 +130,9 @@ export const processTransmux = (options) => {
       waitForEndedTimelineEvent = false;
       onEndedTimeline();
     }
+    if (event.data.action === 'log') {
+      onTransmuxerLog(event.data.log);
+    }
 
     // wait for the transmuxed event since we may have audio and video
     if (event.data.type !== 'transmuxed') {
@@ -152,8 +157,20 @@ export const processTransmux = (options) => {
     dequeue(transmuxer);
     /* eslint-enable */
   };
+  const handleError = () => {
+    const error = {
+      message: 'Received an error message from the transmuxer worker',
+      metadata: {
+        errorType: videojs.Error.StreamingFailedToTransmuxSegment,
+        segmentInfo: segmentInfoPayload({segment})
+      }
+    };
+
+    onDone(null, error);
+  };
 
   transmuxer.onmessage = handleMessage;
+  transmuxer.onerror = handleError;
 
   if (audioAppendStart) {
     transmuxer.postMessage({
@@ -181,6 +198,7 @@ export const processTransmux = (options) => {
     const buffer = bytes instanceof ArrayBuffer ? bytes : bytes.buffer;
     const byteOffset = bytes instanceof ArrayBuffer ? 0 : bytes.byteOffset;
 
+    triggerSegmentEventFn({ type: 'segmenttransmuxingstart', segment });
     transmuxer.postMessage(
       {
         action: 'push',
@@ -197,13 +215,12 @@ export const processTransmux = (options) => {
     );
   }
 
-  // even if we didn't push any bytes, we have to make sure we flush in case we reached
-  // the end of the segment
-  transmuxer.postMessage({ action: isPartial ? 'partialFlush' : 'flush' });
-
   if (isEndOfTimeline) {
     transmuxer.postMessage({ action: 'endTimeline' });
   }
+  // even if we didn't push any bytes, we have to make sure we flush in case we reached
+  // the end of the segment
+  transmuxer.postMessage({ action: 'flush' });
 };
 
 export const dequeue = (transmuxer) => {

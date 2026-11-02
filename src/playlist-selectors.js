@@ -133,33 +133,41 @@ export const comparePlaylistResolution = function(left, right) {
 /**
  * Chooses the appropriate media playlist based on bandwidth and player size
  *
- * @param {Object} master
- *        Object representation of the master manifest
- * @param {number} playerBandwidth
+ * @param {Object} settings
+ *        Object of information required to use this selector
+ * @param {Object} settings.main
+ *        Object representation of the main manifest
+ * @param {number} settings.bandwidth
  *        Current calculated bandwidth of the player
- * @param {number} playerWidth
+ * @param {number} settings.playerWidth
  *        Current width of the player element (should account for the device pixel ratio)
- * @param {number} playerHeight
+ * @param {number} settings.playerHeight
  *        Current height of the player element (should account for the device pixel ratio)
- * @param {boolean} limitRenditionByPlayerDimensions
+ * @param {number} settings.playerObjectFit
+ *        Current value of the video element's object-fit CSS property. Allows taking into
+ *        account that the video might be scaled up to cover the media element when selecting
+ *        media playlists based on player size.
+ * @param {boolean} settings.limitRenditionByPlayerDimensions
  *        True if the player width and height should be used during the selection, false otherwise
- * @param {Object} masterPlaylistController
- *        the current masterPlaylistController object
+ * @param {Object} settings.playlistController
+ *        the current playlistController object
  * @return {Playlist} the highest bitrate playlist less than the
  * currently detected bandwidth, accounting for some amount of
  * bandwidth variance
  */
-export const simpleSelector = function(
-  master,
-  playerBandwidth,
-  playerWidth,
-  playerHeight,
-  limitRenditionByPlayerDimensions,
-  masterPlaylistController
-) {
+export let simpleSelector = function(settings) {
+  const {
+    main,
+    bandwidth: playerBandwidth,
+    playerWidth,
+    playerHeight,
+    playerObjectFit,
+    limitRenditionByPlayerDimensions,
+    playlistController
+  } = settings;
 
-  // If we end up getting called before `master` is available, exit early
-  if (!master) {
+  // If we end up getting called before `main` is available, exit early
+  if (!main) {
     return;
   }
 
@@ -170,11 +178,11 @@ export const simpleSelector = function(
     limitRenditionByPlayerDimensions
   };
 
-  let playlists = master.playlists;
+  let playlists = main.playlists;
 
   // if playlist is audio only, select between currently active audio group playlists.
-  if (Playlist.isAudioOnly(master)) {
-    playlists = masterPlaylistController.getAudioTrackPlaylists_();
+  if (Playlist.isAudioOnly(main)) {
+    playlists = playlistController.getAudioTrackPlaylists_();
     // add audioOnly to options so that we log audioOnly: true
     // at the buttom of this function for debugging.
     options.audioOnly = true;
@@ -204,12 +212,12 @@ export const simpleSelector = function(
   sortedPlaylistReps = sortedPlaylistReps.filter((rep) => !Playlist.isIncompatible(rep.playlist));
 
   // filter out any playlists that have been disabled manually through the representations
-  // api or blacklisted temporarily due to playback errors.
+  // api or excluded temporarily due to playback errors.
   let enabledPlaylistReps = sortedPlaylistReps.filter((rep) => Playlist.isEnabled(rep.playlist));
 
   if (!enabledPlaylistReps.length) {
-    // if there are no enabled playlists, then they have all been blacklisted or disabled
-    // by the user through the representations api. In this case, ignore blacklisting and
+    // if there are no enabled playlists, then they have all been excluded or disabled
+    // by the user through the representations api. In this case, ignore exclusion and
     // fallback to what the user wants by using playlists the user has not disabled.
     enabledPlaylistReps = sortedPlaylistReps.filter((rep) => !Playlist.isDisabled(rep.playlist));
   }
@@ -271,7 +279,18 @@ export const simpleSelector = function(
   // find the smallest variant that is larger than the player
   // if there is no match of exact resolution
   if (!resolutionBestRep) {
-    resolutionPlusOneList = haveResolution.filter((rep) => rep.width > playerWidth || rep.height > playerHeight);
+    resolutionPlusOneList = haveResolution.filter((rep) => {
+      if (playerObjectFit === 'cover') {
+        // video will be scaled up to cover the player. We need to
+        // make sure rendition is at least as wide and as high as the
+        // player.
+        return rep.width > playerWidth && rep.height > playerHeight;
+      }
+
+      // video will be scaled down to fit inside the player soon as
+      // its resolution exceeds player size in at least one dimension.
+      return rep.width > playerWidth || rep.height > playerHeight;
+    });
 
     // find all the variants have the same smallest resolution
     resolutionPlusOneSmallest = resolutionPlusOneList.filter((rep) => rep.width === resolutionPlusOneList[0].width &&
@@ -284,8 +303,34 @@ export const simpleSelector = function(
     resolutionPlusOneRep = resolutionPlusOneSmallest.filter((rep) => rep.bandwidth === highestRemainingBandwidthRep.bandwidth)[0];
   }
 
+  let leastPixelDiffRep;
+
+  // If this selector proves to be better than others,
+  // resolutionPlusOneRep and resolutionBestRep and all
+  // the code involving them should be removed.
+  if (playlistController.leastPixelDiffSelector) {
+    // find the variant that is closest to the player's pixel size
+    const leastPixelDiffList = haveResolution.map((rep) => {
+      rep.pixelDiff = Math.abs(rep.width - playerWidth) + Math.abs(rep.height - playerHeight);
+      return rep;
+    });
+
+    // get the highest bandwidth, closest resolution playlist
+    stableSort(leastPixelDiffList, (left, right) => {
+      // sort by highest bandwidth if pixelDiff is the same
+      if (left.pixelDiff === right.pixelDiff) {
+        return right.bandwidth - left.bandwidth;
+      }
+
+      return left.pixelDiff - right.pixelDiff;
+    });
+
+    leastPixelDiffRep = leastPixelDiffList[0];
+  }
+
   // fallback chain of variants
   const chosenRep = (
+    leastPixelDiffRep ||
     resolutionPlusOneRep ||
     resolutionBestRep ||
     bandwidthBestRep ||
@@ -296,7 +341,9 @@ export const simpleSelector = function(
   if (chosenRep && chosenRep.playlist) {
     let type = 'sortedPlaylistReps';
 
-    if (resolutionPlusOneRep) {
+    if (leastPixelDiffRep) {
+      type = 'leastPixelDiffRep';
+    } else if (resolutionPlusOneRep) {
       type = 'resolutionPlusOneRep';
     } else if (resolutionBestRep) {
       type = 'resolutionBestRep';
@@ -313,6 +360,16 @@ export const simpleSelector = function(
   return null;
 };
 
+export const TEST_ONLY_SIMPLE_SELECTOR = (newSimpleSelector) => {
+  const oldSimpleSelector = simpleSelector;
+
+  simpleSelector = newSimpleSelector;
+
+  return function resetSimpleSelector() {
+    simpleSelector = oldSimpleSelector;
+  };
+};
+
 // Playlist Selectors
 
 /**
@@ -326,16 +383,21 @@ export const simpleSelector = function(
  * bandwidth variance
  */
 export const lastBandwidthSelector = function() {
-  const pixelRatio = this.useDevicePixelRatio ? window.devicePixelRatio || 1 : 1;
+  let pixelRatio = this.useDevicePixelRatio ? window.devicePixelRatio || 1 : 1;
 
-  return simpleSelector(
-    this.playlists.master,
-    this.systemBandwidth,
-    parseInt(safeGetComputedStyle(this.tech_.el(), 'width'), 10) * pixelRatio,
-    parseInt(safeGetComputedStyle(this.tech_.el(), 'height'), 10) * pixelRatio,
-    this.limitRenditionByPlayerDimensions,
-    this.masterPlaylistController_
-  );
+  if (!isNaN(this.customPixelRatio)) {
+    pixelRatio = this.customPixelRatio;
+  }
+
+  return simpleSelector({
+    main: this.playlists.main,
+    bandwidth: this.systemBandwidth,
+    playerWidth: parseInt(safeGetComputedStyle(this.tech_.el(), 'width'), 10) * pixelRatio,
+    playerHeight: parseInt(safeGetComputedStyle(this.tech_.el(), 'height'), 10) * pixelRatio,
+    playerObjectFit: this.usePlayerObjectFit ? safeGetComputedStyle(this.tech_.el(), 'objectFit') : '',
+    limitRenditionByPlayerDimensions: this.limitRenditionByPlayerDimensions,
+    playlistController: this.playlistController_
+  });
 };
 
 /**
@@ -354,27 +416,44 @@ export const lastBandwidthSelector = function() {
  */
 export const movingAverageBandwidthSelector = function(decay) {
   let average = -1;
+  let lastSystemBandwidth = -1;
 
   if (decay < 0 || decay > 1) {
     throw new Error('Moving average bandwidth decay must be between 0 and 1.');
   }
 
   return function() {
-    const pixelRatio = this.useDevicePixelRatio ? window.devicePixelRatio || 1 : 1;
+    let pixelRatio = this.useDevicePixelRatio ? window.devicePixelRatio || 1 : 1;
+
+    if (!isNaN(this.customPixelRatio)) {
+      pixelRatio = this.customPixelRatio;
+    }
 
     if (average < 0) {
       average = this.systemBandwidth;
+      lastSystemBandwidth = this.systemBandwidth;
     }
 
-    average = decay * this.systemBandwidth + (1 - decay) * average;
-    return simpleSelector(
-      this.playlists.master,
-      average,
-      parseInt(safeGetComputedStyle(this.tech_.el(), 'width'), 10) * pixelRatio,
-      parseInt(safeGetComputedStyle(this.tech_.el(), 'height'), 10) * pixelRatio,
-      this.limitRenditionByPlayerDimensions,
-      this.masterPlaylistController_
-    );
+    // stop the average value from decaying for every 250ms
+    // when the systemBandwidth is constant
+    // and
+    // stop average from setting to a very low value when the
+    // systemBandwidth becomes 0 in case of chunk cancellation
+
+    if (this.systemBandwidth > 0 && this.systemBandwidth !== lastSystemBandwidth) {
+      average = decay * this.systemBandwidth + (1 - decay) * average;
+      lastSystemBandwidth = this.systemBandwidth;
+    }
+
+    return simpleSelector({
+      main: this.playlists.main,
+      bandwidth: average,
+      playerWidth: parseInt(safeGetComputedStyle(this.tech_.el(), 'width'), 10) * pixelRatio,
+      playerHeight: parseInt(safeGetComputedStyle(this.tech_.el(), 'height'), 10) * pixelRatio,
+      playerObjectFit: this.usePlayerObjectFit ? safeGetComputedStyle(this.tech_.el(), 'objectFit') : '',
+      limitRenditionByPlayerDimensions: this.limitRenditionByPlayerDimensions,
+      playlistController: this.playlistController_
+    });
   };
 };
 
@@ -383,8 +462,8 @@ export const movingAverageBandwidthSelector = function(decay) {
  *
  * @param {Object} settings
  *        Object of information required to use this selector
- * @param {Object} settings.master
- *        Object representation of the master manifest
+ * @param {Object} settings.main
+ *        Object representation of the main manifest
  * @param {number} settings.currentTime
  *        The current time of the player
  * @param {number} settings.bandwidth
@@ -408,7 +487,7 @@ export const movingAverageBandwidthSelector = function(decay) {
  */
 export const minRebufferMaxBandwidthSelector = function(settings) {
   const {
-    master,
+    main,
     currentTime,
     bandwidth,
     duration,
@@ -420,15 +499,15 @@ export const minRebufferMaxBandwidthSelector = function(settings) {
 
   // filter out any playlists that have been excluded due to
   // incompatible configurations
-  const compatiblePlaylists = master.playlists.filter(playlist => !Playlist.isIncompatible(playlist));
+  const compatiblePlaylists = main.playlists.filter(playlist => !Playlist.isIncompatible(playlist));
 
   // filter out any playlists that have been disabled manually through the representations
-  // api or blacklisted temporarily due to playback errors.
+  // api or excluded temporarily due to playback errors.
   let enabledPlaylists = compatiblePlaylists.filter(Playlist.isEnabled);
 
   if (!enabledPlaylists.length) {
-    // if there are no enabled playlists, then they have all been blacklisted or disabled
-    // by the user through the representations api. In this case, ignore blacklisting and
+    // if there are no enabled playlists, then they have all been excluded or disabled
+    // by the user through the representations api. In this case, ignore exclusion and
     // fallback to what the user wants by using playlists the user has not disabled.
     enabledPlaylists = compatiblePlaylists.filter(playlist => !Playlist.isDisabled(playlist));
   }
@@ -490,7 +569,7 @@ export const minRebufferMaxBandwidthSelector = function(settings) {
 export const lowestBitrateCompatibleVariantSelector = function() {
   // filter out any playlists that have been excluded due to
   // incompatible configurations or playback errors
-  const playlists = this.playlists.master.playlists.filter(Playlist.isEnabled);
+  const playlists = this.playlists.main.playlists.filter(Playlist.isEnabled);
 
   // Sort ascending by bitrate
   stableSort(
@@ -503,7 +582,7 @@ export const lowestBitrateCompatibleVariantSelector = function() {
   //
   // If an entire manifest has no valid videos everything will get filtered
   // out.
-  const playlistsWithVideo = playlists.filter(playlist => !!codecsForPlaylist(this.playlists.master, playlist).video);
+  const playlistsWithVideo = playlists.filter(playlist => !!codecsForPlaylist(this.playlists.main, playlist).video);
 
   return playlistsWithVideo[0] || null;
 };

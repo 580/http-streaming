@@ -3,8 +3,8 @@ import window from 'global/window';
 import {
   setupMediaPlaylists,
   resolveMediaGroupUris,
-  masterForMedia,
-  addPropertiesToMaster,
+  mainForMedia,
+  addPropertiesToMain,
   parseManifest
 } from '../src/manifest';
 import {
@@ -56,20 +56,20 @@ QUnit.module('manifest', function() {
   });
 
   QUnit.test('setupMediaPlaylists does nothing if no playlists', function(assert) {
-    const master = {
+    const main = {
       playlists: []
     };
 
-    setupMediaPlaylists(master);
+    setupMediaPlaylists(main);
 
-    assert.deepEqual(master, {
+    assert.deepEqual(main, {
       playlists: []
-    }, 'master remains unchanged');
+    }, 'main remains unchanged');
   });
 
   QUnit.test('setupMediaPlaylists adds URI keys for each playlist', function(assert) {
-    const master = {
-      uri: 'master-uri',
+    const main = {
+      uri: 'main-uri',
       playlists: [{
         uri: 'uri-0'
       }, {
@@ -79,22 +79,24 @@ QUnit.module('manifest', function() {
     const expectedPlaylist0 = {
       attributes: {},
       resolvedUri: urlTo('uri-0'),
+      playlistErrors_: 0,
       uri: 'uri-0',
       id: '0-uri-0'
     };
     const expectedPlaylist1 = {
       attributes: {},
       resolvedUri: urlTo('uri-1'),
+      playlistErrors_: 0,
       uri: 'uri-1',
       id: '1-uri-1'
     };
 
-    setupMediaPlaylists(master);
+    setupMediaPlaylists(main);
 
-    assert.deepEqual(master.playlists[0], expectedPlaylist0, 'retained playlist indices');
-    assert.deepEqual(master.playlists[1], expectedPlaylist1, 'retained playlist indices');
-    assert.deepEqual(master.playlists['0-uri-0'], expectedPlaylist0, 'added playlist key');
-    assert.deepEqual(master.playlists['1-uri-1'], expectedPlaylist1, 'added playlist key');
+    assert.deepEqual(main.playlists[0], expectedPlaylist0, 'retained playlist indices');
+    assert.deepEqual(main.playlists[1], expectedPlaylist1, 'retained playlist indices');
+    assert.deepEqual(main.playlists['0-uri-0'], expectedPlaylist0, 'added playlist key');
+    assert.deepEqual(main.playlists['1-uri-1'], expectedPlaylist1, 'added playlist key');
 
     assert.equal(this.env.log.warn.calls, 2, 'logged two warnings');
     assert.equal(
@@ -110,8 +112,8 @@ QUnit.module('manifest', function() {
   });
 
   QUnit.test('setupMediaPlaylists adds attributes objects if missing', function(assert) {
-    const master = {
-      uri: 'master-uri',
+    const main = {
+      uri: 'main-uri',
       playlists: [{
         uri: 'uri-0'
       }, {
@@ -119,10 +121,10 @@ QUnit.module('manifest', function() {
       }]
     };
 
-    setupMediaPlaylists(master);
+    setupMediaPlaylists(main);
 
-    assert.ok(master.playlists[0].attributes, 'added attributes object');
-    assert.ok(master.playlists[1].attributes, 'added attributes object');
+    assert.ok(main.playlists[0].attributes, 'added attributes object');
+    assert.ok(main.playlists[1].attributes, 'added attributes object');
 
     assert.equal(this.env.log.warn.calls, 2, 'logged two warnings');
     assert.equal(
@@ -138,8 +140,8 @@ QUnit.module('manifest', function() {
   });
 
   QUnit.test('setupMediaPlaylists resolves playlist URIs', function(assert) {
-    const master = {
-      uri: 'master-uri',
+    const main = {
+      uri: 'main-uri',
       playlists: [{
         attributes: { BANDWIDTH: 10 },
         uri: 'uri-0'
@@ -149,32 +151,32 @@ QUnit.module('manifest', function() {
       }]
     };
 
-    setupMediaPlaylists(master);
+    setupMediaPlaylists(main);
 
-    assert.equal(master.playlists[0].resolvedUri, urlTo('uri-0'), 'resolves URI');
-    assert.equal(master.playlists[1].resolvedUri, urlTo('uri-1'), 'resolves URI');
+    assert.equal(main.playlists[0].resolvedUri, urlTo('uri-0'), 'resolves URI');
+    assert.equal(main.playlists[1].resolvedUri, urlTo('uri-1'), 'resolves URI');
   });
 
   QUnit.module('resolveMediaGroupUris');
 
   QUnit.test('resolveMediaGroupUris does nothing when no media groups', function(assert) {
-    const master = {
-      uri: 'master-uri',
+    const main = {
+      uri: 'main-uri',
       playlists: [],
       mediaGroups: []
     };
 
-    resolveMediaGroupUris(master);
-    assert.deepEqual(master, {
-      uri: 'master-uri',
+    resolveMediaGroupUris(main);
+    assert.deepEqual(main, {
+      uri: 'main-uri',
       playlists: [],
       mediaGroups: []
     }, 'does nothing when no media groups');
   });
 
   QUnit.test('resolveMediaGroupUris resolves media group URIs', function(assert) {
-    const master = {
-      uri: 'master-uri',
+    const main = {
+      uri: 'main-uri',
       playlists: [{
         attributes: { BANDWIDTH: 10 },
         id: 'playlist-0',
@@ -231,10 +233,10 @@ QUnit.module('manifest', function() {
       }
     };
 
-    resolveMediaGroupUris(master);
+    resolveMediaGroupUris(main);
 
-    assert.deepEqual(master, {
-      uri: 'master-uri',
+    assert.deepEqual(main, {
+      uri: 'main-uri',
       playlists: [{
         attributes: { BANDWIDTH: 10 },
         id: 'playlist-0',
@@ -300,13 +302,13 @@ QUnit.module('manifest', function() {
     }, 'resolved URIs of certain media groups');
   });
 
-  QUnit.module('masterForMedia');
+  QUnit.module('mainForMedia');
 
-  QUnit.test('creates a skeleton of a master playlist', function(assert) {
-    const master = masterForMedia({}, 'some-uri');
+  QUnit.test('creates a skeleton of a main playlist', function(assert) {
+    const main = mainForMedia({}, 'some-uri');
 
     assert.deepEqual(
-      master,
+      main,
       {
         mediaGroups: {
           'AUDIO': {},
@@ -323,35 +325,35 @@ QUnit.module('manifest', function() {
           attributes: {}
         }]
       },
-      'created master playlist skeleton'
+      'created main playlist skeleton'
     );
   });
 
   QUnit.test('adds by ID reference to playlists array', function(assert) {
-    const master = masterForMedia({}, 'some-uri');
+    const main = mainForMedia({}, 'some-uri');
 
     assert.equal(
-      master.playlists['0-some-uri'],
-      master.playlists[0],
+      main.playlists['0-some-uri'],
+      main.playlists[0],
       'added by ID reference to playlists array'
     );
   });
 
-  QUnit.module('addPropertiesToMaster');
+  QUnit.module('addPropertiesToMain');
 
-  QUnit.test('adds uri to master', function(assert) {
-    const master = {
+  QUnit.test('adds uri to main', function(assert) {
+    const main = {
       mediaGroups: {},
       playlists: []
     };
 
-    addPropertiesToMaster(master, 'some-uri');
+    addPropertiesToMain(main, 'some-uri');
 
-    assert.equal(master.uri, 'some-uri', 'added uri to master');
+    assert.equal(main.uri, 'some-uri', 'added uri to main');
   });
 
   QUnit.test('adds placeholder URIs to playlists if necessary', function(assert) {
-    const master = {
+    const main = {
       mediaGroups: {},
       playlists: [{
         uri: 'playlist-0-uri',
@@ -361,24 +363,24 @@ QUnit.module('manifest', function() {
       }]
     };
 
-    addPropertiesToMaster(master, 'some-uri');
+    addPropertiesToMain(main, 'some-uri');
 
-    assert.equal(master.playlists[0].uri, 'playlist-0-uri', 'did not overwrite uri');
-    assert.equal(master.playlists[1].uri, 'placeholder-uri-1', 'added placeholder uri');
+    assert.equal(main.playlists[0].uri, 'playlist-0-uri', 'did not overwrite uri');
+    assert.equal(main.playlists[1].uri, 'placeholder-uri-1', 'added placeholder uri');
   });
 
   QUnit.test('adds placeholder URIs to media groups if necessary', function(assert) {
-    const master = {
+    const main = {
       mediaGroups: {
         AUDIO: {
           default: {
             en: {
               playlists: [{
                 uri: 'audio-default-uri'
-              }]
+              }, {}]
             },
             es: {
-              playlists: [{}]
+              playlists: [{}, {}]
             }
           }
         }
@@ -386,22 +388,55 @@ QUnit.module('manifest', function() {
       playlists: []
     };
 
-    addPropertiesToMaster(master, 'some-uri');
+    addPropertiesToMain(main, 'some-uri');
+
+    const groups = main.mediaGroups.AUDIO.default;
 
     assert.equal(
-      master.mediaGroups.AUDIO.default.en.playlists[0].uri,
+      groups.en.playlists[0].uri,
       'audio-default-uri',
       'did not overwrite uri'
     );
     assert.equal(
-      master.mediaGroups.AUDIO.default.es.playlists[0].uri,
+      groups.en.playlists[1].uri,
+      '1-placeholder-uri-AUDIO-default-en',
+      'added placeholder uri with index'
+    );
+    assert.equal(
+      groups.es.playlists[0].uri,
       'placeholder-uri-AUDIO-default-es',
-      'added placeholder uri'
+      'added placeholder uri without index'
+    );
+    assert.equal(
+      groups.es.playlists[1].uri,
+      '1-placeholder-uri-AUDIO-default-es',
+      'added placeholder with index uri'
+    );
+
+    assert.equal(
+      groups.en.playlists[0].id,
+      '0-placeholder-uri-AUDIO-default-en',
+      'added placeholder id with index'
+    );
+    assert.equal(
+      groups.en.playlists[1].id,
+      '1-placeholder-uri-AUDIO-default-en',
+      'added placeholder id with index'
+    );
+    assert.equal(
+      groups.es.playlists[0].id,
+      '0-placeholder-uri-AUDIO-default-es',
+      'added placeholder id with index'
+    );
+    assert.equal(
+      groups.es.playlists[1].id,
+      '1-placeholder-uri-AUDIO-default-es',
+      'added placeholder with index id'
     );
   });
 
   QUnit.test('adds resolvedUri for media group URIs', function(assert) {
-    const master = {
+    const main = {
       mediaGroups: {
         AUDIO: {
           default: {
@@ -413,16 +448,35 @@ QUnit.module('manifest', function() {
       playlists: []
     };
 
-    addPropertiesToMaster(master, 'some-uri');
+    addPropertiesToMain(main, 'some-uri');
 
     assert.equal(
-      master.mediaGroups.AUDIO.default.en.resolvedUri,
+      main.mediaGroups.AUDIO.default.en.resolvedUri,
       urlTo('audio-default-uri'),
       'added resolvedUri'
     );
     assert.notOk(
-      master.mediaGroups.AUDIO.default.es.resolvedUri,
+      main.mediaGroups.AUDIO.default.es.resolvedUri,
       'did not add resolvedUri when no uri'
     );
   });
+});
+
+QUnit.test('does not add placeholder properties if playlist is a main playlist', function(assert) {
+  const main = {
+    mediaGroups: {
+      AUDIO: {
+        default: {
+          en: {default: true}
+        }
+      }
+    },
+    playlists: [
+      {uri: 'foo', attributes: {AUDIO: 'default', CODECS: 'mp4a.40.2', BANDWIDTH: 20}}
+    ]
+  };
+
+  addPropertiesToMain(main, 'some-uri');
+
+  assert.notOk(main.mediaGroups.AUDIO.default.en.playlists, 'did not add playlists');
 });

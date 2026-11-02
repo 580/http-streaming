@@ -7,14 +7,15 @@ import {
   shouldWaitForTimelineChange,
   segmentTooLong,
   mediaDuration,
-  getTroublesomeSegmentDurationMessage
+  getTroublesomeSegmentDurationMessage,
+  getSyncSegmentCandidate,
+  segmentInfoString,
+  shouldFixBadTimelineChanges
 } from '../src/segment-loader';
-import videojs from 'video.js';
 import mp4probe from 'mux.js/lib/mp4/probe';
 import {
   playlistWithDuration,
   standardXHRResponse,
-  setupMediaSource,
   MockTextTrack
 } from './test-helpers.js';
 import {
@@ -27,6 +28,7 @@ import {
   oneSecond as oneSecondSegment,
   audio as audioSegment,
   video as videoSegment,
+  videoDiffPtsDts as videoDiffPtsDtsSegment,
   videoOneSecond as videoOneSecondSegment,
   videoOneSecond1 as videoOneSecond1Segment,
   videoOneSecond2 as videoOneSecond2Segment,
@@ -43,13 +45,29 @@ import {
   mp4VideoInit as mp4VideoInitSegment,
   mp4Audio as mp4AudioSegment,
   mp4AudioInit as mp4AudioInitSegment,
+  zeroLength as zeroLengthSegment,
   encrypted as encryptedSegment,
-  encryptionKey,
-  zeroLength as zeroLengthSegment
+  encryptionKey
 } from 'create-test-data!segments';
 import sinon from 'sinon';
 import { timeRangesEqual } from './custom-assertions.js';
 import { QUOTA_EXCEEDED_ERR } from '../src/error-codes';
+import window from 'global/window';
+import document from 'global/document';
+import {merge, createTimeRanges} from '../src/util/vjs-compat';
+
+const newEvent = function(name) {
+  let event;
+
+  if (typeof window.Event === 'function') {
+    event = new window.Event(name);
+  } else {
+    event = document.createEvent('Event');
+    event.initEvent(name, true, true);
+  }
+
+  return event;
+};
 
 /* TODO
 // noop addSegmentMetadataCue_ since most test segments dont have real timing information
@@ -61,6 +79,41 @@ SegmentLoader.prototype.addSegmentMetadataCue_ = function() {};
 */
 
 QUnit.module('SegmentLoader Isolated Functions');
+
+QUnit.test('getSyncSegmentCandidate works as expected', function(assert) {
+  let segments = [];
+
+  assert.equal(getSyncSegmentCandidate(-1, segments, 0), 0, '-1 timeline, no segments, 0 target');
+  assert.equal(getSyncSegmentCandidate(0, segments, 0), 0, '0 timeline, no segments, 0 target');
+
+  segments = [
+    {timeline: 0, duration: 4},
+    {timeline: 0, duration: 4},
+    {timeline: 0, duration: 4},
+    {timeline: 0, duration: 4}
+  ];
+
+  assert.equal(getSyncSegmentCandidate(-1, segments, 0), 0, '-1 timeline, 4x 0 segments, 0 target');
+  assert.equal(getSyncSegmentCandidate(0, segments, 1), 0, '0 timeline, 4x 0 segments, 1 target');
+  assert.equal(getSyncSegmentCandidate(0, segments, 4), 1, '0 timeline, 4x 0 segments, 4 target');
+  assert.equal(getSyncSegmentCandidate(-1, segments, 8), 0, '-1 timeline, 4x 0 segments, 8 target');
+  assert.equal(getSyncSegmentCandidate(0, segments, 8), 2, '0 timeline, 4x 0 segments, 8 target');
+  assert.equal(getSyncSegmentCandidate(0, segments, 20), 3, '0 timeline, 4x 0 segments, 20 target');
+
+  segments = [
+    {timeline: 1, duration: 4},
+    {timeline: 0, duration: 4},
+    {timeline: 1, duration: 4},
+    {timeline: 0, duration: 4},
+    {timeline: 2, duration: 4},
+    {timeline: 1, duration: 4},
+    {timeline: 0, duration: 4}
+  ];
+
+  assert.equal(getSyncSegmentCandidate(1, segments, 8), 5, '1 timeline, mixed timeline segments, 8 target');
+  assert.equal(getSyncSegmentCandidate(0, segments, 8), 6, '0 timeline, mixed timeline segments, 8 target');
+  assert.equal(getSyncSegmentCandidate(2, segments, 8), 4, '2 timeline, mixed timeline segments, 8 target');
+});
 
 QUnit.test('illegalMediaSwitch detects illegal media switches', function(assert) {
   let startingMedia = { hasAudio: true, hasVideo: true };
@@ -176,7 +229,7 @@ QUnit.test('returns startOfSegment when timeline changes and the buffer is empty
       segmentTimeline: 1,
       currentTimeline: 0,
       startOfSegment: 3,
-      buffered: videojs.createTimeRanges()
+      buffered: createTimeRanges()
     }),
     3,
     'returned startOfSegment'
@@ -189,7 +242,7 @@ QUnit.test('returns buffered end when timeline changes and there exists buffered
       segmentTimeline: 1,
       currentTimeline: 0,
       startOfSegment: 3,
-      buffered: videojs.createTimeRanges([[1, 5], [7, 8]])
+      buffered: createTimeRanges([[1, 5], [7, 8]])
     }),
     8,
     'returned buffered end'
@@ -202,7 +255,7 @@ QUnit.test('returns null when timeline does not change', function(assert) {
       segmentTimeline: 0,
       currentTimeline: 0,
       startOfSegment: 3,
-      buffered: videojs.createTimeRanges([[1, 5], [7, 8]])
+      buffered: createTimeRanges([[1, 5], [7, 8]])
     }) === null,
     'returned null'
   );
@@ -212,7 +265,7 @@ QUnit.test('returns null when timeline does not change', function(assert) {
       segmentTimeline: 1,
       currentTimeline: 1,
       startOfSegment: 3,
-      buffered: videojs.createTimeRanges([[1, 5], [7, 8]])
+      buffered: createTimeRanges([[1, 5], [7, 8]])
     }) === null,
     'returned null'
   );
@@ -224,7 +277,7 @@ QUnit.test('returns value when overrideCheck is true', function(assert) {
       segmentTimeline: 0,
       currentTimeline: 0,
       startOfSegment: 3,
-      buffered: videojs.createTimeRanges([[1, 5], [7, 8]]),
+      buffered: createTimeRanges([[1, 5], [7, 8]]),
       overrideCheck: true
     }),
     8,
@@ -238,7 +291,7 @@ QUnit.test('uses startOfSegment when timeline is before current', function(asser
       segmentTimeline: 0,
       currentTimeline: 1,
       startOfSegment: 3,
-      buffered: videojs.createTimeRanges([[1, 5], [7, 8]]),
+      buffered: createTimeRanges([[1, 5], [7, 8]]),
       overrideCheck: true
     }),
     3,
@@ -413,10 +466,58 @@ QUnit.test('main loader does not wait if pending audio timeline change matches s
   );
 });
 
+QUnit.module('shouldFixBadTimelineChange');
+
+QUnit.test('shouldFixBadTimelineChange returns true when timelines are both changing to different timelines', function(assert) {
+  const timelineChangeController = {
+    pendingTimelineChange({ type }) {
+      if (type === 'audio') {
+        return { from: 1, to: 2 };
+      } else if (type === 'main') {
+        return { from: 2, to: 1 };
+      }
+    }
+  };
+
+  assert.ok(shouldFixBadTimelineChanges(timelineChangeController), 'should fix a bad timeline change');
+});
+
+QUnit.test('shouldFixBadTimelineChange returns false when only one timeline has a pending change', function(assert) {
+  const timelineChangeController = {
+    pendingTimelineChange({ type }) {
+      if (type === 'audio') {
+        return { from: 1, to: 2 };
+      }
+    }
+  };
+
+  assert.notOk(shouldFixBadTimelineChanges(timelineChangeController), 'should not fix a timeline change');
+});
+
+QUnit.test('shouldFixBadTimelineChange returns false when both timelines are changing to the same value', function(assert) {
+  const timelineChangeController = {
+    pendingTimelineChange({ type }) {
+      if (type === 'audio') {
+        return { from: 1, to: 2 };
+      } else if (type === 'main') {
+        return { from: 1, to: 2 };
+      }
+    }
+  };
+
+  assert.notOk(shouldFixBadTimelineChanges(timelineChangeController), 'should not fix a good timeline change');
+});
+
+QUnit.test('shouldFixBadTimelineChange returns false when timelineChangeController is undefined', function(assert) {
+  const timelineChangeController = undefined;
+
+  assert.notOk(shouldFixBadTimelineChanges(timelineChangeController), 'should not fix a timeline change with no timelineChangeController');
+});
+
 QUnit.module('safeBackBufferTrimTime');
 
 QUnit.test('uses 30s before playhead when seekable start is 0', function(assert) {
-  const seekable = videojs.createTimeRanges([[0, 120]]);
+  const seekable = createTimeRanges([[0, 120]]);
   const targetDuration = 10;
   const currentTime = 70;
 
@@ -428,7 +529,7 @@ QUnit.test('uses 30s before playhead when seekable start is 0', function(assert)
 });
 
 QUnit.test('uses 30s before playhead when seekable start is earlier', function(assert) {
-  const seekable = videojs.createTimeRanges([[30, 120]]);
+  const seekable = createTimeRanges([[30, 120]]);
   const targetDuration = 10;
   const currentTime = 70;
 
@@ -440,7 +541,7 @@ QUnit.test('uses 30s before playhead when seekable start is earlier', function(a
 });
 
 QUnit.test('uses seekable start when within 30s of playhead', function(assert) {
-  const seekable = videojs.createTimeRanges([[41, 120]]);
+  const seekable = createTimeRanges([[41, 120]]);
   const targetDuration = 10;
   const currentTime = 70;
 
@@ -452,7 +553,7 @@ QUnit.test('uses seekable start when within 30s of playhead', function(assert) {
 });
 
 QUnit.test('uses target duration when seekable range is within target duration', function(assert) {
-  let seekable = videojs.createTimeRanges([[0, 120]]);
+  let seekable = createTimeRanges([[0, 120]]);
   const targetDuration = 10;
   let currentTime = 9;
 
@@ -462,7 +563,7 @@ QUnit.test('uses target duration when seekable range is within target duration',
     'returned 10 seconds before playhead'
   );
 
-  seekable = videojs.createTimeRanges([[40, 120]]);
+  seekable = createTimeRanges([[40, 120]]);
   currentTime = 41;
 
   assert.equal(
@@ -473,7 +574,7 @@ QUnit.test('uses target duration when seekable range is within target duration',
 });
 
 QUnit.test('uses target duration when seekable range is after current time', function(assert) {
-  const seekable = videojs.createTimeRanges([[110, 120]]);
+  const seekable = createTimeRanges([[110, 120]]);
   const targetDuration = 10;
   const currentTime = 80;
 
@@ -485,7 +586,7 @@ QUnit.test('uses target duration when seekable range is after current time', fun
 });
 
 QUnit.test('uses current time when seekable range is well before current time', function(assert) {
-  const seekable = videojs.createTimeRanges([[10, 20]]);
+  const seekable = createTimeRanges([[10, 20]]);
   const targetDuration = 10;
   const currentTime = 140;
 
@@ -499,32 +600,40 @@ QUnit.test('uses current time when seekable range is well before current time', 
 QUnit.module('mediaDuration');
 
 QUnit.test('0 when no timing info', function(assert) {
-  assert.equal(mediaDuration({}, {}), 0, '0 when no timing info');
-  assert.equal(mediaDuration({ start: 1 }, { start: 1 }), 0, '0 when no end times');
-  assert.equal(mediaDuration({ end: 1 }, { end: 1 }), 0, '0 when no start times');
+  assert.equal(mediaDuration({}), 0, '0 when no timing info');
+  assert.equal(
+    mediaDuration({audioTimingInfo: {start: 1}, videoTimingInfo: {start: 1}}),
+    0,
+    '0 when no end times'
+  );
+  assert.equal(
+    mediaDuration({audioTimingInfo: {end: 1}, videoTimingInfo: {end: 1}}),
+    0,
+    '0 when no start times'
+  );
 });
 
 QUnit.test('reports audio duration', function(assert) {
   assert.equal(
-    mediaDuration({ start: 1, end: 2 }, {}),
+    mediaDuration({audioTimingInfo: {start: 1, end: 2}}),
     1,
     'audio duration when no video info'
   );
 
   assert.equal(
-    mediaDuration({ start: 1, end: 2 }, { start: 1 }),
+    mediaDuration({audioTimingInfo: {start: 1, end: 2}, videoTimingInfo: {start: 1}}),
     1,
     'audio duration when not enough video info'
   );
 
   assert.equal(
-    mediaDuration({ start: 1, end: 2 }, { end: 3 }),
+    mediaDuration({audioTimingInfo: {start: 1, end: 2}, videoTimingInfo: {end: 3}}),
     1,
     'audio duration when not enough video info'
   );
 
   assert.equal(
-    mediaDuration({ start: 1, end: 3 }, { start: 1, end: 2 }),
+    mediaDuration({audioTimingInfo: {start: 1, end: 3}, videoTimingInfo: {start: 1, end: 2}}),
     2,
     'audio duration when audio duration > video duration'
   );
@@ -532,25 +641,67 @@ QUnit.test('reports audio duration', function(assert) {
 
 QUnit.test('reports video duration', function(assert) {
   assert.equal(
-    mediaDuration({}, { start: 1, end: 2 }),
+    mediaDuration({videoTimingInfo: {start: 1, end: 2}}),
     1,
     'video duration when no audio info'
   );
 
   assert.equal(
-    mediaDuration({ start: 1 }, { start: 1, end: 2 }),
+    mediaDuration({audioTimingInfo: {start: 1}, videoTimingInfo: {start: 1, end: 2}}),
     1,
     'video duration when not enough audio info'
   );
 
   assert.equal(
-    mediaDuration({ end: 3 }, { start: 1, end: 2 }),
+    mediaDuration({audioTimingInfo: {end: 3}, videoTimingInfo: {start: 1, end: 2}}),
     1,
     'video duration when not enough audio info'
   );
 
   assert.equal(
-    mediaDuration({ start: 1, end: 2 }, { start: 1, end: 3 }),
+    mediaDuration({audioTimingInfo: {start: 1, end: 2}, videoTimingInfo: {start: 1, end: 3}}),
+    2,
+    'video duration when video duration > audio duration'
+  );
+});
+
+if (window.BigInt) {
+  QUnit.test('handles bigint', function(assert) {
+    assert.equal(
+      mediaDuration({audioTimingInfo: {start: window.BigInt(1), end: window.BigInt(2)}}),
+      1,
+      'audio duration when no video info'
+    );
+
+    assert.equal(
+      mediaDuration({videoTimingInfo: {start: window.BigInt(1), end: window.BigInt(2)}}),
+      1,
+      'video duration when no audio info'
+    );
+  });
+}
+
+QUnit.test('reports video duration', function(assert) {
+  assert.equal(
+    mediaDuration({videoTimingInfo: {start: 1, end: 2}}),
+    1,
+    'video duration when no audio info'
+  );
+
+  assert.equal(
+    mediaDuration({audioTimingInfo: {start: 1}, videoTimingInfo: {start: 1, end: 2}}),
+    1,
+    'video duration when not enough audio info'
+  );
+
+  assert.equal(
+    mediaDuration({audioTimingInfo: {end: 3}, videoTimingInfo: {start: 1, end: 2}}),
+    1,
+    'video duration when not enough audio info'
+  );
+
+  assert.equal(
+    mediaDuration({audioTimingInfo: {start: 1, end: 2}, videoTimingInfo: {start: 1, end: 3}}),
     2,
     'video duration when video duration > audio duration'
   );
@@ -729,13 +880,260 @@ QUnit.test('info segment is bit too long', function(assert) {
   );
 });
 
+QUnit.module('segmentInfoString');
+
+QUnit.test('all possible information', function(assert) {
+  const segment = {
+    uri: 'foo',
+    parts: [
+      {start: 0, end: 1, duration: 1},
+      {start: 1, end: 2, duration: 1},
+      {start: 2, end: 3, duration: 1},
+      {start: 4, end: 5, duration: 1},
+      {start: 5, end: 6, duration: 1}
+    ],
+    start: 0,
+    end: 6
+  };
+  const segmentInfo = {
+    startOfSegment: 1,
+    duration: 5,
+    segment,
+    part: segment.parts[0],
+    playlist: {
+      mediaSequence: 0,
+      id: 'playlist-id',
+      segments: [segment]
+    },
+    mediaIndex: 0,
+    partIndex: 0,
+    timeline: 0,
+    independent: 'previous part',
+    getMediaInfoForTime: 'bufferedEnd 0'
+  };
+
+  const expected =
+    'segment [0/0] ' +
+    'part [0/4] ' +
+    'segment start/end [0 => 6] ' +
+    'part start/end [0 => 1] ' +
+    'startOfSegment [1] ' +
+    'duration [5] ' +
+    'timeline [0] ' +
+    'selected by [getMediaInfoForTime (bufferedEnd 0) with independent previous part] ' +
+    'playlist [playlist-id]';
+
+  assert.equal(segmentInfoString(segmentInfo), expected, 'expected return value');
+});
+
+QUnit.test('mediaIndex selection', function(assert) {
+  const segment = {
+    uri: 'foo',
+    parts: [
+      {start: 0, end: 1, duration: 1},
+      {start: 1, end: 2, duration: 1},
+      {start: 2, end: 3, duration: 1},
+      {start: 4, end: 5, duration: 1},
+      {start: 5, end: 6, duration: 1}
+    ],
+    start: 0,
+    end: 6
+  };
+  const segmentInfo = {
+    startOfSegment: 1,
+    duration: 5,
+    segment,
+    part: segment.parts[0],
+    playlist: {
+      mediaSequence: 0,
+      id: 'playlist-id',
+      segments: [segment]
+    },
+    mediaIndex: 0,
+    partIndex: 0,
+    timeline: 0
+  };
+
+  const expected =
+    'segment [0/0] ' +
+    'part [0/4] ' +
+    'segment start/end [0 => 6] ' +
+    'part start/end [0 => 1] ' +
+    'startOfSegment [1] ' +
+    'duration [5] ' +
+    'timeline [0] ' +
+    'selected by [mediaIndex/partIndex increment] ' +
+    'playlist [playlist-id]';
+
+  assert.equal(segmentInfoString(segmentInfo), expected, 'expected return value');
+});
+
+QUnit.test('sync request selection', function(assert) {
+  const segment = {
+    uri: 'foo',
+    parts: [
+      {start: 0, end: 1, duration: 1},
+      {start: 1, end: 2, duration: 1},
+      {start: 2, end: 3, duration: 1},
+      {start: 4, end: 5, duration: 1},
+      {start: 5, end: 6, duration: 1}
+    ],
+    start: 0,
+    end: 6
+  };
+  const segmentInfo = {
+    startOfSegment: 1,
+    duration: 5,
+    segment,
+    part: segment.parts[0],
+    playlist: {
+      mediaSequence: 0,
+      id: 'playlist-id',
+      segments: [segment]
+    },
+    mediaIndex: 0,
+    partIndex: 0,
+    timeline: 0,
+    isSyncRequest: true
+
+  };
+
+  const expected =
+    'segment [0/0] ' +
+    'part [0/4] ' +
+    'segment start/end [0 => 6] ' +
+    'part start/end [0 => 1] ' +
+    'startOfSegment [1] ' +
+    'duration [5] ' +
+    'timeline [0] ' +
+    'selected by [getSyncSegmentCandidate (isSyncRequest)] ' +
+    'playlist [playlist-id]';
+
+  assert.equal(segmentInfoString(segmentInfo), expected, 'expected return value');
+});
+
+QUnit.test('preload segment', function(assert) {
+  const segment = {
+    parts: [
+      {start: 0, end: 1, duration: 1},
+      {start: 1, end: 2, duration: 1},
+      {start: 2, end: 3, duration: 1},
+      {start: 4, end: 5, duration: 1},
+      {start: 5, end: 6, duration: 1}
+    ],
+    start: 0,
+    end: 6
+  };
+  const segmentInfo = {
+    startOfSegment: 1,
+    duration: 5,
+    segment,
+    part: segment.parts[0],
+    playlist: {
+      mediaSequence: 0,
+      id: 'playlist-id',
+      segments: [segment]
+    },
+    mediaIndex: 0,
+    partIndex: 0,
+    timeline: 0
+  };
+
+  const expected =
+    'pre-segment [0/0] ' +
+    'part [0/4] ' +
+    'segment start/end [0 => 6] ' +
+    'part start/end [0 => 1] ' +
+    'startOfSegment [1] ' +
+    'duration [5] ' +
+    'timeline [0] ' +
+    'selected by [mediaIndex/partIndex increment] ' +
+    'playlist [playlist-id]';
+
+  assert.equal(segmentInfoString(segmentInfo), expected, 'expected return value');
+});
+
+QUnit.test('without parts', function(assert) {
+  const segment = {
+    start: 0,
+    end: 6
+  };
+  const segmentInfo = {
+    startOfSegment: 1,
+    duration: 5,
+    segment,
+    playlist: {
+      mediaSequence: 0,
+      id: 'playlist-id',
+      segments: [segment]
+    },
+    mediaIndex: 0,
+    timeline: 0
+  };
+
+  const expected =
+    'pre-segment [0/0] ' +
+    'segment start/end [0 => 6] ' +
+    'startOfSegment [1] ' +
+    'duration [5] ' +
+    'timeline [0] ' +
+    'selected by [mediaIndex/partIndex increment] ' +
+    'playlist [playlist-id]';
+
+  assert.equal(segmentInfoString(segmentInfo), expected, 'expected return value');
+});
+
+QUnit.test('unknown start/end', function(assert) {
+  const segment = {
+    uri: 'foo',
+    parts: [
+      {start: null, end: null, duration: 1},
+      {start: null, end: null, duration: 1},
+      {start: null, end: null, duration: 1},
+      {start: null, end: null, duration: 1},
+      {start: null, end: null, duration: 1}
+    ],
+    start: null,
+    end: null
+  };
+  const segmentInfo = {
+    startOfSegment: 1,
+    duration: 5,
+    segment,
+    part: segment.parts[0],
+    playlist: {
+      mediaSequence: 0,
+      id: 'playlist-id',
+      segments: [segment]
+    },
+    mediaIndex: 0,
+    partIndex: 0,
+    timeline: 0
+  };
+
+  const expected =
+    'segment [0/0] ' +
+    'part [0/4] ' +
+    'segment start/end [null => null] ' +
+    'part start/end [null => null] ' +
+    'startOfSegment [1] ' +
+    'duration [5] ' +
+    'timeline [0] ' +
+    'selected by [mediaIndex/partIndex increment] ' +
+    'playlist [playlist-id]';
+
+  assert.equal(segmentInfoString(segmentInfo), expected, 'expected return value');
+});
+
 QUnit.module('SegmentLoader', function(hooks) {
   hooks.beforeEach(LoaderCommonHooks.beforeEach);
   hooks.afterEach(LoaderCommonHooks.afterEach);
 
   LoaderCommonFactory({
     LoaderConstructor: SegmentLoader,
-    loaderSettings: {loaderType: 'main'}
+    loaderSettings: {loaderType: 'main'},
+    encryptedSegmentFn: encryptedSegment,
+    encryptedSegmentKeyFn: encryptionKey
   });
 
   // Tests specific to the main segment loader go in this module
@@ -780,7 +1178,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     });
 
     QUnit.test('only appends one segment at a time', function(assert) {
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
 
         loader.playlist(playlistWithDuration(10));
         loader.load();
@@ -799,31 +1197,227 @@ QUnit.module('SegmentLoader', function(hooks) {
       });
     });
 
-    QUnit.test('updates timestamps when segments do not start at zero', function(assert) {
-      const playlist = playlistWithDuration(10);
+    QUnit.test('should use video PTS value for timestamp offset calculation when useDtsForTimestampOffset set as false', function(assert) {
+      loader = new SegmentLoader(LoaderCommonSettings.call(this, {
+        loaderType: 'main',
+        segmentMetadataTrack: this.segmentMetadataTrack,
+        useDtsForTimestampOffset: false
+      }), {});
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, {isVideoOnly: true}).then(() => {
+      const playlist = playlistWithDuration(20, { uri: 'playlist.m3u8' });
 
-        playlist.segments.forEach((segment) => {
-          segment.map = {
-            resolvedUri: 'init.mp4',
-            byterange: { length: Infinity, offset: 0 }
-          };
-        });
-        loader.playlist(playlist);
-        loader.load();
-
-        this.startTime.returns(11);
-
-        this.clock.tick(100);
-        // init
-        standardXHRResponse(this.requests.shift(), mp4VideoInitSegment());
-        // segment
-        standardXHRResponse(this.requests.shift(), mp4VideoSegment());
-
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         return new Promise((resolve, reject) => {
           loader.one('appended', resolve);
           loader.one('error', reject);
+
+          loader.playlist(playlist);
+          loader.load();
+
+          this.clock.tick(100);
+
+          standardXHRResponse(this.requests.shift(), videoDiffPtsDtsSegment());
+        });
+      }).then(() => {
+        assert.equal(
+          loader.sourceUpdater_.videoTimestampOffset(),
+          -playlist.segments[0].videoTimingInfo.transmuxedPresentationStart,
+          'set video timestampOffset'
+        );
+
+        assert.equal(
+          loader.sourceUpdater_.audioTimestampOffset(),
+          -playlist.segments[0].videoTimingInfo.transmuxedPresentationStart,
+          'set audio timestampOffset'
+        );
+      });
+    });
+
+    QUnit.test('should use video DTS value for timestamp offset calculation when useDtsForTimestampOffset set as true', function(assert) {
+      loader = new SegmentLoader(LoaderCommonSettings.call(this, {
+        loaderType: 'main',
+        segmentMetadataTrack: this.segmentMetadataTrack,
+        useDtsForTimestampOffset: true
+      }), {});
+
+      const playlist = playlistWithDuration(20, { uri: 'playlist.m3u8' });
+
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+        return new Promise((resolve, reject) => {
+          loader.one('appended', resolve);
+          loader.one('error', reject);
+
+          loader.playlist(playlist);
+          loader.load();
+
+          this.clock.tick(100);
+          // segment
+          standardXHRResponse(this.requests.shift(), videoDiffPtsDtsSegment());
+        });
+      }).then(() => {
+        assert.equal(
+          loader.sourceUpdater_.videoTimestampOffset(),
+          -playlist.segments[0].videoTimingInfo.transmuxedDecodeStart,
+          'set video timestampOffset'
+        );
+
+        assert.equal(
+          loader.sourceUpdater_.audioTimestampOffset(),
+          -playlist.segments[0].videoTimingInfo.transmuxedDecodeStart,
+          'set audio timestampOffset'
+        );
+      });
+    });
+
+    QUnit.test('should use video DTS value as primary for muxed segments (eg: audio and video together) for timestamp offset calculation when useDtsForTimestampOffset set as true', function(assert) {
+      loader = new SegmentLoader(LoaderCommonSettings.call(this, {
+        loaderType: 'main',
+        segmentMetadataTrack: this.segmentMetadataTrack,
+        useDtsForTimestampOffset: true
+      }), {});
+
+      const playlist = playlistWithDuration(20, { uri: 'playlist.m3u8' });
+
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+        return new Promise((resolve, reject) => {
+          loader.one('appended', resolve);
+          loader.one('error', reject);
+
+          loader.playlist(playlist);
+          loader.load();
+
+          this.clock.tick(100);
+
+          standardXHRResponse(this.requests.shift(), muxedSegment());
+        });
+      }).then(() => {
+        assert.equal(
+          loader.sourceUpdater_.videoTimestampOffset(),
+          -playlist.segments[0].videoTimingInfo.transmuxedDecodeStart,
+          'set video timestampOffset'
+        );
+
+        assert.equal(
+          loader.sourceUpdater_.audioTimestampOffset(),
+          -playlist.segments[0].videoTimingInfo.transmuxedDecodeStart,
+          'set audio timestampOffset'
+        );
+      });
+    });
+
+    QUnit.test('should use audio DTS value for timestamp offset calculation when useDtsForTimestampOffset set as true and only audio', function(assert) {
+      loader = new SegmentLoader(LoaderCommonSettings.call(this, {
+        loaderType: 'main',
+        segmentMetadataTrack: this.segmentMetadataTrack,
+        useDtsForTimestampOffset: true
+      }), {});
+
+      const playlist = playlistWithDuration(20, { uri: 'playlist.m3u8' });
+
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, { isAudioOnly: true }).then(() => {
+        return new Promise((resolve, reject) => {
+          loader.one('appended', resolve);
+          loader.one('error', reject);
+
+          loader.playlist(playlist);
+          loader.load();
+
+          this.clock.tick(100);
+          // segment
+          standardXHRResponse(this.requests.shift(), audioSegment());
+        });
+      }).then(() => {
+        assert.equal(
+          loader.sourceUpdater_.audioTimestampOffset(),
+          -playlist.segments[0].audioTimingInfo.transmuxedDecodeStart,
+          'set audio timestampOffset'
+        );
+      });
+    });
+
+    QUnit.test('should fallback to segment\'s start time when there is no transmuxed content (eg: mp4) and useDtsForTimestampOffset is set as true', function(assert) {
+      loader = new SegmentLoader(LoaderCommonSettings.call(this, {
+        loaderType: 'main',
+        segmentMetadataTrack: this.segmentMetadataTrack,
+        useDtsForTimestampOffset: true
+      }), {});
+
+      const playlist = playlistWithDuration(10);
+      const ogPost = loader.transmuxer_.postMessage;
+
+      loader.transmuxer_.postMessage = (message) => {
+        if (message.action === 'probeMp4StartTime') {
+          const evt = newEvent('message');
+
+          evt.data = {action: 'probeMp4StartTime', startTime: 11, data: message.data};
+
+          loader.transmuxer_.dispatchEvent(evt);
+          return;
+        }
+        return ogPost.call(loader.transmuxer_, message);
+      };
+
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+        return new Promise((resolve, reject) => {
+          loader.one('appended', resolve);
+          loader.one('error', reject);
+
+          playlist.segments.forEach((segment) => {
+            segment.map = {
+              resolvedUri: 'init.mp4',
+              byterange: { length: Infinity, offset: 0 }
+            };
+          });
+          loader.playlist(playlist);
+          loader.load();
+
+          this.clock.tick(100);
+          // init
+          standardXHRResponse(this.requests.shift(), mp4VideoInitSegment());
+          // segment
+          standardXHRResponse(this.requests.shift(), mp4VideoSegment());
+        });
+      }).then(() => {
+        assert.equal(loader.sourceUpdater_.videoTimestampOffset(), -11, 'set video timestampOffset');
+        assert.equal(loader.sourceUpdater_.audioTimestampOffset(), -11, 'set audio timestampOffset');
+      });
+    });
+
+    QUnit.test('updates timestamps when segments do not start at zero', function(assert) {
+      const playlist = playlistWithDuration(10);
+      const ogPost = loader.transmuxer_.postMessage;
+
+      loader.transmuxer_.postMessage = (message) => {
+        if (message.action === 'probeMp4StartTime') {
+          const evt = newEvent('message');
+
+          evt.data = {action: 'probeMp4StartTime', startTime: 11, data: message.data};
+
+          loader.transmuxer_.dispatchEvent(evt);
+          return;
+        }
+        return ogPost.call(loader.transmuxer_, message);
+      };
+
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, {isVideoOnly: true}).then(() => {
+        return new Promise((resolve, reject) => {
+          loader.one('appended', resolve);
+          loader.one('error', reject);
+
+          playlist.segments.forEach((segment) => {
+            segment.map = {
+              resolvedUri: 'init.mp4',
+              byterange: { length: Infinity, offset: 0 }
+            };
+          });
+          loader.playlist(playlist);
+          loader.load();
+
+          this.clock.tick(100);
+          // init
+          standardXHRResponse(this.requests.shift(), mp4VideoInitSegment());
+          // segment
+          standardXHRResponse(this.requests.shift(), mp4VideoSegment());
         });
       }).then(() => {
 
@@ -841,152 +1435,68 @@ QUnit.module('SegmentLoader', function(hooks) {
       });
     });
 
-    QUnit.test('segmentKey will cache new encrypted keys with cacheEncryptionKeys true', function(assert) {
-      loader.cacheEncryptionKeys_ = true;
+    QUnit.test('uses the log event from the transmuxer', function(assert) {
+      const playlist = playlistWithDuration(10);
+      const ogPost = loader.transmuxer_.postMessage;
+      const messages = [];
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
-        loader.playlist(playlistWithDuration(10, { isEncrypted: true }));
-        loader.load();
-        this.clock.tick(1);
+      loader.logger_ = (message) => {
+        messages.push(message);
+      };
 
-        const keyCache = loader.keyCache_;
-        const bytes = new Uint32Array([1, 2, 3, 4]);
+      loader.transmuxer_.postMessage = (message) => {
+        const retval = ogPost.call(loader.transmuxer_, message);
 
-        assert.strictEqual(Object.keys(keyCache).length, 0, 'no keys have been cached');
+        if (message.action === 'push') {
+          const log = newEvent('message');
 
-        const result = loader.segmentKey({resolvedUri: 'key.php', bytes});
+          log.data = {action: 'log', log: {message: 'debug foo', stream: 'something', level: 'warn'}};
 
-        assert.deepEqual(result, {resolvedUri: 'key.php'}, 'gets by default');
-        loader.segmentKey({resolvedUri: 'key.php', bytes}, true);
-        assert.deepEqual(keyCache['key.php'].bytes, bytes, 'key has been cached');
-      });
-    });
+          loader.transmuxer_.dispatchEvent(log);
+          return;
+        }
 
-    QUnit.test('segmentKey will not cache encrypted keys with cacheEncryptionKeys false', function(assert) {
-      loader.cacheEncryptionKeys_ = false;
+        return retval;
+      };
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
-        loader.playlist(playlistWithDuration(10, { isEncrypted: true }));
-        loader.load();
-        this.clock.tick(1);
-
-        const keyCache = loader.keyCache_;
-        const bytes = new Uint32Array([1, 2, 3, 4]);
-
-        assert.strictEqual(Object.keys(keyCache).length, 0, 'no keys have been cached');
-        loader.segmentKey({resolvedUri: 'key.php', bytes}, true);
-
-        assert.strictEqual(Object.keys(keyCache).length, 0, 'no keys have been cached');
-      });
-    });
-
-    QUnit.test('new segment requests will use cached keys', function(assert) {
-      loader.cacheEncryptionKeys_ = true;
-
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, {isVideoOnly: true}).then(() => {
         return new Promise((resolve, reject) => {
           loader.one('appended', resolve);
           loader.one('error', reject);
-          loader.playlist(playlistWithDuration(20, { isEncrypted: true }));
 
-          // make the keys the same
-          loader.playlist_.segments[1].key =
-            videojs.mergeOptions({}, loader.playlist_.segments[0].key);
-          // give 2nd key an iv
-          loader.playlist_.segments[1].key.iv = new Uint32Array([0, 1, 2, 3]);
-
+          loader.playlist(playlist);
           loader.load();
-          this.clock.tick(1);
 
-          assert.strictEqual(this.requests.length, 2, 'one request');
-          assert.strictEqual(this.requests[0].uri, '0-key.php', 'key request');
-          assert.strictEqual(this.requests[1].uri, '0.ts', 'segment request');
-
-          // key response
-          standardXHRResponse(this.requests.shift(), encryptionKey());
-          this.clock.tick(1);
-
+          this.clock.tick(100);
           // segment
-          standardXHRResponse(this.requests.shift(), encryptedSegment());
-          this.clock.tick(1);
-
-          // decryption tick for syncWorker
-          this.clock.tick(1);
-
+          standardXHRResponse(this.requests.shift(), videoOneSecondSegment());
         });
       }).then(() => {
-        assert.deepEqual(loader.keyCache_['0-key.php'], {
-          resolvedUri: '0-key.php',
-          bytes: new Uint32Array([609867320, 2355137646, 2410040447, 480344904])
-        }, 'previous key was cached');
+        let messageFound = false;
 
-        this.clock.tick(1);
-        assert.deepEqual(loader.pendingSegment_.segment.key, {
-          resolvedUri: '0-key.php',
-          uri: '0-key.php',
-          iv: new Uint32Array([0, 1, 2, 3])
-        }, 'used cached key for request and own initialization vector');
-
-        assert.strictEqual(this.requests.length, 1, 'one request');
-        assert.strictEqual(this.requests[0].uri, '1.ts', 'only segment request');
-      });
-    });
-
-    QUnit.test('new segment request keys every time', function(assert) {
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
-        return new Promise((resolve, reject) => {
-          loader.one('appended', resolve);
-          loader.one('error', reject);
-          loader.playlist(playlistWithDuration(20, { isEncrypted: true }));
-
-          loader.load();
-          this.clock.tick(1);
-
-          assert.strictEqual(this.requests.length, 2, 'one request');
-          assert.strictEqual(this.requests[0].uri, '0-key.php', 'key request');
-          assert.strictEqual(this.requests[1].uri, '0.ts', 'segment request');
-
-          // key response
-          standardXHRResponse(this.requests.shift(), encryptionKey());
-          this.clock.tick(1);
-
-          // segment
-          standardXHRResponse(this.requests.shift(), encryptedSegment());
-          this.clock.tick(1);
-
-          // decryption tick for syncWorker
-          this.clock.tick(1);
-
+        messages.forEach(function(message) {
+          if ((/debug foo/).test(message) && (/warn/).test(message) && (/something/).test(message)) {
+            messageFound = true;
+          }
         });
-      }).then(() => {
-        this.clock.tick(1);
 
-        assert.notOk(loader.keyCache_['0-key.php'], 'not cached');
-
-        assert.deepEqual(loader.pendingSegment_.segment.key, {
-          resolvedUri: '1-key.php',
-          uri: '1-key.php'
-        }, 'used cached key for request and own initialization vector');
-
-        assert.strictEqual(this.requests.length, 2, 'two requests');
-        assert.strictEqual(this.requests[0].uri, '1-key.php', 'key request');
-        assert.strictEqual(this.requests[1].uri, '1.ts', 'segment request');
+        assert.ok(messageFound, 'message was logged');
       });
     });
 
     QUnit.test('triggers syncinfoupdate before attempting a resync', function(assert) {
       let syncInfoUpdates = 0;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.playlist(playlistWithDuration(20));
         loader.load();
         this.clock.tick(1);
 
-        this.seekable = videojs.createTimeRanges([[0, 10]]);
+        this.seekable = createTimeRanges([[0, 10]]);
         loader.on('syncinfoupdate', () => {
           syncInfoUpdates++;
           // Simulate the seekable window updating
-          this.seekable = videojs.createTimeRanges([[200, 210]]);
+          this.seekable = createTimeRanges([[200, 210]]);
           // Simulate the seek to live that should happen in playback-watcher
           this.currentTime = 210;
         });
@@ -1015,7 +1525,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('abort does not cancel segment appends in progress', function(assert) {
       const done = assert.async();
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.one('appending', () => {
           loader.abort();
           this.clock.tick(1);
@@ -1035,7 +1545,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('appendsdone happens after appends complete', function(assert) {
       const done = assert.async();
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.playlist(playlistWithDuration(20));
         loader.load();
         this.clock.tick(1);
@@ -1051,7 +1561,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('appendsdone does not happen after abort during append', function(assert) {
       const done = assert.async();
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         let appendsdone = false;
 
         loader.one('appendsdone', () => {
@@ -1101,7 +1611,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       playlist.discontinuityStarts = [1];
       playlist.segments[1].timeline = 1;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         return new Promise((resolve, reject) => {
           loader.one('appended', resolve);
           loader.one('error', reject);
@@ -1121,6 +1631,180 @@ QUnit.module('SegmentLoader', function(hooks) {
       });
     });
 
+    QUnit.test('fixBadTimelineChange on load', function(assert) {
+      loader.dispose();
+      loader = new SegmentLoader(LoaderCommonSettings.call(this, {
+        loaderType: 'audio'
+      }), {});
+      const origLoad = loader.load;
+      const origResetEverything = loader.resetEverything;
+      let loadCalls = 0;
+      let resetEverythingCalls = 0;
+
+      loader.load = () => {
+        loadCalls++;
+        origLoad.call(loader);
+      };
+      loader.resetEverything = () => {
+        resetEverythingCalls++;
+        origResetEverything.call(loader);
+      };
+      loader.timelineChangeController_.pendingTimelineChange = ({ type }) => {
+        if (type === 'audio') {
+          return {
+            from: 3,
+            to: 2
+          };
+        } else if (type === 'main') {
+          return {
+            from: 0,
+            to: 1
+          };
+        }
+      };
+
+      let fixBadTimelineChangeCount = 0;
+
+      loader.timelineChangeController_.trigger = (type) => {
+        if (type === 'fixBadTimelineChange') {
+          fixBadTimelineChangeCount++;
+        }
+      };
+
+      const playlist = playlistWithDuration(20);
+
+      playlist.discontinuityStarts = [1];
+      loader.getCurrentMediaInfo_ = () => {
+        return {
+          hasVideo: true,
+          hasAudio: false,
+          isMuxed: false
+        };
+      };
+
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+        loader.playlist(playlist);
+        loader.load();
+        this.clock.tick(1);
+        assert.equal(loadCalls, 1, '1 load calls expected');
+        assert.equal(resetEverythingCalls, 1, '1 load calls expected');
+        assert.equal(fixBadTimelineChangeCount, 1, '1 fixBadTimelineChangeCount triggered');
+      });
+    });
+
+    QUnit.test('fixBadTimelineChange on append', function(assert) {
+      loader.dispose();
+      loader = new SegmentLoader(LoaderCommonSettings.call(this, {
+        loaderType: 'main'
+      }), {});
+      const origLoad = loader.load;
+      const origResetEverything = loader.resetEverything;
+      let loadCalls = 0;
+      let resetEverythingCalls = 0;
+
+      loader.load = () => {
+        loadCalls++;
+        origLoad.call(loader);
+      };
+      loader.resetEverything = () => {
+        resetEverythingCalls++;
+        origResetEverything.call(loader);
+      };
+      loader.timelineChangeController_.pendingTimelineChange = ({ type }) => {
+        if (type === 'audio') {
+          return {
+            from: 3,
+            to: 2
+          };
+        } else if (type === 'main') {
+          return {
+            from: 0,
+            to: 1
+          };
+        }
+      };
+
+      let fixBadTimelineChangeCount = 0;
+
+      loader.timelineChangeController_.trigger = (type) => {
+        if (type === 'fixBadTimelineChange') {
+          fixBadTimelineChangeCount++;
+        }
+      };
+
+      this.sourceUpdater_.ready = () => {
+        return true;
+      };
+
+      const playlist = playlistWithDuration(20);
+
+      playlist.discontinuityStarts = [1];
+      loader.getCurrentMediaInfo_ = () => {
+        return {
+          hasVideo: true,
+          hasAudio: false,
+          isMuxed: false
+        };
+      };
+      loader.pendingSegment_ = {
+        foo: 'bar',
+        videoTimingInfo: 1
+      };
+      loader.audioDisabled_ = true;
+
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+        loader.playlist(playlist);
+        loader.load();
+        this.clock.tick(1);
+        assert.equal(loadCalls, 1, '1 load calls expected');
+        assert.equal(resetEverythingCalls, 1, '1 load calls expected');
+        assert.equal(fixBadTimelineChangeCount, 1, '1 fixBadTimelineChangeCount triggered');
+
+      });
+    });
+
+    QUnit.test('triggers event when audio timeline is behind main', function(assert) {
+      loader.dispose();
+      loader = new SegmentLoader(LoaderCommonSettings.call(this, {
+        loaderType: 'audio',
+        sourceType: 'dash'
+      }), {});
+
+      loader.timelineChangeController_.pendingTimelineChange = ({ type }) => {
+        if (type === 'audio') {
+          return {
+            from: 0,
+            to: 5
+          };
+        } else if (type === 'main') {
+          return {
+            from: 0,
+            to: 10
+          };
+        }
+      };
+
+      const triggerSpy = sinon.spy(loader.timelineChangeController_, 'trigger');
+
+      const playlist = playlistWithDuration(20);
+
+      playlist.discontinuityStarts = [1];
+      loader.getCurrentMediaInfo_ = () => {
+        return {
+          hasVideo: true,
+          hasAudio: true,
+          isMuxed: true
+        };
+      };
+
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+        loader.playlist(playlist);
+        loader.load();
+        this.clock.tick(1);
+        assert.ok(triggerSpy.calledWith('audioTimelineBehind'), 'audio timeline behind event is triggered');
+      });
+    });
+
     QUnit.test('audio loader does not wait to request segment even if timestamp offset is nonzero', function(assert) {
       loader.dispose();
       loader = new SegmentLoader(LoaderCommonSettings.call(this, {
@@ -1133,14 +1817,14 @@ QUnit.module('SegmentLoader', function(hooks) {
       // represents the same (and a valid) case.
       loader.currentTime_ = () => 70;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.playlist(playlist);
         loader.load();
         this.clock.tick(1);
 
         assert.equal(
           loader.pendingSegment_.timestampOffset,
-          60,
+          70,
           'timestamp offset is nonzero'
         );
         assert.equal(loader.state, 'WAITING', 'state is waiting on segment');
@@ -1167,7 +1851,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       playlist.discontinuityStarts = [1];
       playlist.segments[1].timeline = 1;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         return new Promise((resolve, reject) => {
           loader.one('appended', resolve);
           loader.one('error', reject);
@@ -1207,7 +1891,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       playlist.discontinuityStarts = [1];
       playlist.segments[1].timeline = 1;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         return new Promise((resolve, reject) => {
           loader.one('appended', resolve);
           loader.one('error', reject);
@@ -1248,7 +1932,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       playlist.discontinuityStarts = [1];
       playlist.segments[1].timeline = 1;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         return new Promise((resolve, reject) => {
           loader.one('appended', resolve);
           loader.one('error', reject);
@@ -1297,7 +1981,7 @@ QUnit.module('SegmentLoader', function(hooks) {
 
       let ranFinish = false;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const origFinish = loader.segmentRequestFinished_.bind(loader);
 
         // Although overriding the internal function isn't the cleanest way to test, it's
@@ -1352,7 +2036,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       playlist.discontinuityStarts = [1];
       playlist.segments[1].timeline = 1;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.playlist(playlist);
         // demuxed
         loader.setAudio(false);
@@ -1413,7 +2097,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('main loader updates main and audio timeline changes on appends when muxed', function(assert) {
       const playlist = playlistWithDuration(20);
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.playlist(playlist);
         loader.load();
         this.clock.tick(1);
@@ -1469,7 +2153,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('main loader updates only main timeline changes on appends when demuxed', function(assert) {
       const playlist = playlistWithDuration(20);
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.playlist(playlist);
         // demuxed
         loader.setAudio(false);
@@ -1534,7 +2218,7 @@ QUnit.module('SegmentLoader', function(hooks) {
 
       this.fakeMainTimelineChange();
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         return new Promise((resolve, reject) => {
           loader.one('appended', resolve);
           loader.one('error', reject);
@@ -1576,7 +2260,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('sets the timestampOffset on timeline change', function(assert) {
       const setTimestampOffsetMessages = [];
       let timestampOffsetEvents = 0;
-      let buffered = videojs.createTimeRanges();
+      let buffered = createTimeRanges();
       const playlist = playlistWithDuration(40);
       let videoSegmentStartTime = 3;
       let videoSegmentEndTime = 13;
@@ -1587,7 +2271,7 @@ QUnit.module('SegmentLoader', function(hooks) {
         timestampOffsetEvents++;
       });
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, { isVideoOnly: true }).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, { isVideoOnly: true }).then(() => {
 
         // The transmuxer's timestamp offset is set at different times than the source
         // buffers' timestamp offsets. Since keepOriginalTimestamps is set to true, the
@@ -1642,7 +2326,7 @@ QUnit.module('SegmentLoader', function(hooks) {
           'timestampoffset was not set in transmuxer'
         );
 
-        buffered = videojs.createTimeRanges([[0, 10]]);
+        buffered = createTimeRanges([[0, 10]]);
         playlist.segments[0].end = 10;
         // start request for segment 1
         this.clock.tick(1);
@@ -1683,7 +2367,7 @@ QUnit.module('SegmentLoader', function(hooks) {
           'timestampoffset was not set in transmuxer'
         );
 
-        buffered = videojs.createTimeRanges([[10, 20]]);
+        buffered = createTimeRanges([[10, 20]]);
         playlist.segments[1].end = 20;
         // start request for segment 2, which has a discontinuity (new timeline)
         this.clock.tick(1);
@@ -1744,7 +2428,7 @@ QUnit.module('SegmentLoader', function(hooks) {
         origSaveSegmentTimingInfo({ segmentInfo, shouldSaveTimelineMapping });
       };
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.playlist(playlist);
         loader.load();
         this.clock.tick(1);
@@ -1764,7 +2448,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('main loader saves timeline mapping', function(assert) {
       const syncController = loader.syncController_;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.playlist(playlistWithDuration(20));
         loader.load();
         this.clock.tick(1);
@@ -1791,7 +2475,7 @@ QUnit.module('SegmentLoader', function(hooks) {
 
       const syncController = loader.syncController_;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         return new Promise((resolve, reject) => {
 
           loader.one('appended', resolve);
@@ -1811,7 +2495,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('tracks segment end times as they are buffered', function(assert) {
       const playlist = playlistWithDuration(20);
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
 
         loader.playlist(playlist);
         loader.load();
@@ -1840,7 +2524,7 @@ QUnit.module('SegmentLoader', function(hooks) {
         addCue: addCueSpy
       };
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
 
         loader.playlist(playlistWithDuration(50));
         loader.load();
@@ -1877,6 +2561,30 @@ QUnit.module('SegmentLoader', function(hooks) {
       });
     });
 
+    QUnit.test('appends and removes segments without a segment metadata track', function(assert) {
+      loader.segmentMetadataTrack_ = undefined;
+
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+        loader.playlist(playlistWithDuration(50));
+        loader.load();
+        this.clock.tick(1);
+
+        const appended = new Promise((resolve, reject) => {
+          loader.one('appended', resolve);
+          loader.one('error', reject);
+        });
+
+        standardXHRResponse(this.requests.shift(), muxedSegment());
+        return appended;
+      }).then(() => {
+        assert.strictEqual(loader.mediaIndex, 0, 'first segment appended without a metadata track');
+        assert.notOk(loader.error(), 'segment processing did not fail');
+        loader.remove(0, 1);
+        this.clock.tick(1);
+        assert.strictEqual(loader.segmentMetadataTrack_, undefined, 'buffer removal does not create a metadata track');
+      });
+    });
+
     QUnit.test('does not add cue for invalid segment timing info', function(assert) {
       const addCueSpy = sinon.spy();
 
@@ -1884,7 +2592,7 @@ QUnit.module('SegmentLoader', function(hooks) {
         addCue: addCueSpy
       };
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.playlist(playlistWithDuration(50));
         loader.load();
 
@@ -1921,7 +2629,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       }];
       const addCueSpy = sinon.spy();
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.on('appending', () => {
           // Simulate an id3Frame event happening that will call handleId3_
           loader.handleId3_(loader.pendingSegment_, metadataCues, dispatchType);
@@ -1947,7 +2655,7 @@ QUnit.module('SegmentLoader', function(hooks) {
         loader.playlist(playlistWithDuration(20));
         loader.load();
         // set the mediaSource duration as it is usually set by
-        // master playlist controller, which is not present here
+        // main playlist controller, which is not present here
         loader.mediaSource_.duration = 20;
 
         this.clock.tick(1);
@@ -1960,6 +2668,9 @@ QUnit.module('SegmentLoader', function(hooks) {
             }
           });
 
+        this.sourceUpdater_ = loader.sourceUpdater_;
+        this.inbandTextTracks_ = loader.inbandTextTracks_;
+        this.tech_ = loader.vhs_.tech_;
         standardXHRResponse(this.requests.shift(), muxedSegment());
 
       });
@@ -1976,7 +2687,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       }];
       const addCueSpy = sinon.spy();
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.on('appending', () => {
           // Simulate a caption event happening that will call handleCaptions_
           loader.handleCaptions_(loader.pendingSegment_, captions);
@@ -2025,10 +2736,13 @@ QUnit.module('SegmentLoader', function(hooks) {
 
       const addCueSpy = sinon.spy();
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.on('appending', () => {
           // Simulate a caption event happening that will call handleCaptions_
           const dispatchType = 0x10;
+
+          // Ensure no video buffer is present in the test case
+          loader.sourceUpdater_.videoBuffer = undefined;
 
           loader.handleId3_(loader.pendingSegment_, metadata, dispatchType);
         });
@@ -2047,6 +2761,8 @@ QUnit.module('SegmentLoader', function(hooks) {
           const cue = addCueSpy.getCall(0).args[0];
 
           assert.strictEqual(cue.value.data, 'This is a priv tag', 'included the text');
+
+          assert.strictEqual(cue.startTime, metadata[0].cueTime + loader.sourceUpdater_.audioTimestampOffset(), 'cue.startTime offset from audioTimestampOffset');
           done();
         });
 
@@ -2067,6 +2783,9 @@ QUnit.module('SegmentLoader', function(hooks) {
             }
           });
 
+        this.sourceUpdater_ = loader.sourceUpdater_;
+        this.inbandTextTracks_ = loader.inbandTextTracks_;
+        this.tech_ = loader.vhs_.tech_;
         standardXHRResponse(this.requests.shift(), audioSegment());
       });
     });
@@ -2074,7 +2793,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('fires ended at the end of a playlist', function(assert) {
       let endOfStreams = 0;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.on('ended', () => endOfStreams++);
         loader.playlist(playlistWithDuration(10));
         loader.load();
@@ -2097,7 +2816,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       let endOfStreams = 0;
       let bandwidthupdates = 0;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.on('ended', () => endOfStreams++);
 
         loader.on('bandwidthupdate', () => {
@@ -2132,7 +2851,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('live playlists do not trigger ended', function(assert) {
       let endOfStreams = 0;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const playlist = playlistWithDuration(10);
 
         loader.on('ended', () => endOfStreams++);
@@ -2159,7 +2878,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       const playlistUpdated = playlistWithDuration(40);
       const playlist = playlistWithDuration(40);
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
 
         playlist.endList = false;
 
@@ -2222,7 +2941,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       // playlist updated during waiting
       const playlistUpdated = playlistWithDuration(40);
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         playlist.endList = false;
 
         loader.playlist(playlist);
@@ -2286,53 +3005,50 @@ QUnit.module('SegmentLoader', function(hooks) {
     });
 
     QUnit.test('errors when trying to switch from audio and video to audio only', function(assert) {
-      const errors = [];
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         return new Promise((resolve, reject) => {
           loader.one('appended', resolve);
+          loader.one('error', reject);
 
           const playlist = playlistWithDuration(40);
-
-          loader.on('error', () => errors.push(loader.error()));
 
           loader.playlist(playlist);
           loader.load();
           this.clock.tick(1);
 
           standardXHRResponse(this.requests.shift(), muxedSegment());
+          this.clock.tick(1);
         });
-      }).then(() => {
+      }).then(() => new Promise((resolve, reject) => {
         this.clock.tick(1);
+        loader.one('error', () => {
+          const error = loader.error();
 
-        assert.equal(errors.length, 0, 'no errors');
+          assert.equal(
+            error.message,
+            'Only audio found in segment when we expected video.' +
+            ' We can\'t switch to audio only from a stream that had video.' +
+            ' To get rid of this message, please add codec information to the' +
+            ' manifest.',
+            'correct error message'
+          );
+          resolve();
+        });
 
         standardXHRResponse(this.requests.shift(), audioSegment());
-
-        assert.equal(errors.length, 1, 'one error');
-        assert.equal(
-          errors[0].message,
-          'Only audio found in segment when we expected video.' +
-          ' We can\'t switch to audio only from a stream that had video.' +
-          ' To get rid of this message, please add codec information to the' +
-          ' manifest.',
-          'correct error message'
-        );
-      });
+      }));
     });
 
     QUnit.test('errors when trying to switch from audio only to audio and video', function(assert) {
-      const errors = [];
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         return new Promise((resolve, reject) => {
 
           loader.one('appended', resolve);
           loader.one('error', reject);
 
           const playlist = playlistWithDuration(40);
-
-          loader.on('error', () => errors.push(loader.error()));
 
           loader.playlist(playlist);
           loader.load();
@@ -2341,33 +3057,35 @@ QUnit.module('SegmentLoader', function(hooks) {
           standardXHRResponse(this.requests.shift(), audioSegment());
 
         });
-      }).then(() => {
+      }).then(() => new Promise((resolve, reject) => {
         this.clock.tick(1);
 
-        assert.equal(errors.length, 0, 'no errors');
+        loader.one('error', function() {
+          const error = loader.error();
+
+          assert.equal(
+            error.message,
+            'Video found in segment when we expected only audio.' +
+            ' We can\'t switch to a stream with video from an audio only stream.' +
+            ' To get rid of this message, please add codec information to the' +
+            ' manifest.',
+            'correct error message'
+          );
+          resolve();
+        });
 
         standardXHRResponse(this.requests.shift(), muxedSegment());
-
-        assert.equal(errors.length, 1, 'one error');
-        assert.equal(
-          errors[0].message,
-          'Video found in segment when we expected only audio.' +
-          ' We can\'t switch to a stream with video from an audio only stream.' +
-          ' To get rid of this message, please add codec information to the' +
-          ' manifest.',
-          'correct error message'
-        );
-      });
+      }));
     });
 
     QUnit.test('no error when not switching from audio and video', function(assert) {
       const errors = [];
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      loader.on('error', () => errors.push(loader.error()));
+
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
 
         const playlist = playlistWithDuration(40);
-
-        loader.on('error', () => errors.push(loader.error()));
 
         loader.playlist(playlist);
         loader.load();
@@ -2395,7 +3113,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     });
 
     QUnit.test('dispose cleans up transmuxer', function(assert) {
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         loader.playlist(playlistWithDuration(20));
         const transmuxer = loader.transmuxer_;
 
@@ -2418,7 +3136,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     });
 
     QUnit.test('calling remove removes cues', function(assert) {
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
 
         const playlist = playlistWithDuration(40);
 
@@ -2466,7 +3184,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     });
 
     QUnit.test('calling remove handles absence of cues (null)', function(assert) {
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const playlist = playlistWithDuration(40);
 
         loader.playlist(playlist);
@@ -2496,7 +3214,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     });
 
     QUnit.test('only removes video when audio disabled', function(assert) {
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
 
         const playlist = playlistWithDuration(40);
 
@@ -2534,7 +3252,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     });
 
     QUnit.test('removes audio when audio disabled', function(assert) {
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
 
         const playlist = playlistWithDuration(40);
 
@@ -2573,7 +3291,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       let audioRemoves = 0;
       let videoRemoves = 0;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const playlist = playlistWithDuration(40);
 
         loader.playlist(playlist);
@@ -2607,9 +3325,49 @@ QUnit.module('SegmentLoader', function(hooks) {
       });
     });
 
-    QUnit.test('triggers appenderror when append errors', function(assert) {
+    QUnit.test('does not remove when end <= start', function(assert) {
+      let audioRemoves = 0;
+      let videoRemoves = 0;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+        const playlist = playlistWithDuration(40);
+
+        loader.playlist(playlist);
+        loader.load();
+        this.clock.tick(1);
+
+        loader.sourceUpdater_.removeAudio = (start, end) => {
+          audioRemoves++;
+        };
+        loader.sourceUpdater_.removeVideo = (start, end) => {
+          videoRemoves++;
+        };
+
+        assert.equal(audioRemoves, 0, 'no audio removes');
+        assert.equal(videoRemoves, 0, 'no video removes');
+
+        standardXHRResponse(this.requests.shift(), muxedSegment());
+        return new Promise((resolve, reject) => {
+          loader.one('appended', resolve);
+          loader.one('error', reject);
+        });
+      }).then(() => {
+        loader.remove(0, 0, () => {});
+        assert.equal(audioRemoves, 0, 'no audio remove');
+        assert.equal(videoRemoves, 0, 'no video remove');
+
+        loader.remove(5, 4, () => {});
+        assert.equal(audioRemoves, 0, 'no audio remove');
+        assert.equal(videoRemoves, 0, 'no video remove');
+
+        loader.remove(0, 4, () => {});
+        assert.equal(audioRemoves, 1, 'valid remove works');
+        assert.equal(videoRemoves, 1, 'valid remove works');
+      });
+    });
+
+    QUnit.test('triggers appenderror when append errors', function(assert) {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         return new Promise((resolve, reject) => {
           loader.one('appenderror', resolve);
           loader.one('error', reject);
@@ -2633,7 +3391,12 @@ QUnit.module('SegmentLoader', function(hooks) {
       }).then(() => {
         assert.deepEqual(
           loader.error_,
-          'video append of 2960b failed for segment #0 in playlist playlist.m3u8',
+          {
+            message: 'video append of 2960b failed for segment #0 in playlist playlist.m3u8',
+            metadata: {
+              errorType: 'streamingfailedtoappendsegment'
+            }
+          },
           'loader triggered and saved the appenderror'
         );
       });
@@ -2642,7 +3405,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('appends init segments initially', function(assert) {
       const appends = [];
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const origAppendToSourceBuffer = loader.appendToSourceBuffer_.bind(loader);
 
         loader.appendToSourceBuffer_ = (config) => {
@@ -2673,7 +3436,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('does not append init segments after first', function(assert) {
       const appends = [];
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const origAppendToSourceBuffer = loader.appendToSourceBuffer_.bind(loader);
 
         loader.appendToSourceBuffer_ = (config) => {
@@ -2718,7 +3481,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('does not re-append audio init segment when audio only', function(assert) {
       const appends = [];
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, { isAudioOnly: true }).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, { isAudioOnly: true }).then(() => {
         const origAppendToSourceBuffer = loader.appendToSourceBuffer_.bind(loader);
 
         loader.appendToSourceBuffer_ = (config) => {
@@ -2758,7 +3521,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('re-appends audio init segment on playlist changes', function(assert) {
       const appends = [];
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, {isAudioOnly: true}).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, {isAudioOnly: true}).then(() => {
         const origAppendToSourceBuffer = loader.appendToSourceBuffer_.bind(loader);
 
         loader.appendToSourceBuffer_ = (config) => {
@@ -2807,7 +3570,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     QUnit.test('re-appends video init segment on playlist changes', function(assert) {
       const appends = [];
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, {isVideoOnly: true}).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, {isVideoOnly: true}).then(() => {
         const origAppendToSourceBuffer = loader.appendToSourceBuffer_.bind(loader);
 
         loader.appendToSourceBuffer_ = (config) => {
@@ -2852,10 +3615,77 @@ QUnit.module('SegmentLoader', function(hooks) {
       });
     });
 
+    QUnit.skip('sync request can be thrown away', function(assert) {
+      const appends = [];
+      const logs = [];
+
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, {isVideoOnly: true}).then(() => {
+
+        // set the mediaSource duration as it is usually set by
+        // main playlist controller, which is not present here
+        loader.mediaSource_.duration = Infinity;
+
+        return new Promise((resolve, reject) => {
+          loader.one('appended', resolve);
+          loader.one('error', reject);
+
+          const origAppendToSourceBuffer = loader.appendToSourceBuffer_.bind(loader);
+
+          loader.appendToSourceBuffer_ = (config) => {
+            appends.push(config);
+            origAppendToSourceBuffer(config);
+          };
+
+          loader.playlist(playlistWithDuration(20));
+          loader.load();
+          this.clock.tick(1);
+          standardXHRResponse(this.requests.shift(), videoSegment());
+
+        });
+      }).then(() => {
+        return new Promise((resolve, reject) => {
+          // since it's a sync request, wait for the syncinfoupdate event (we won't get the
+          // appended event)
+          this.clock.tick(1);
+
+          assert.equal(appends.length, 1, 'one append');
+          assert.equal(appends[0].type, 'video', 'appended to video buffer');
+          assert.ok(appends[0].initSegment, 'appended video init segment');
+
+          loader.playlist(playlistWithDuration(20, { uri: 'new-playlist.m3u8' }));
+          // remove old aborted request
+          this.requests.shift();
+          // get the new request
+          this.clock.tick(1);
+          loader.chooseNextRequest_ = () => ({partIndex: null, mediaIndex: 1});
+          loader.logger_ = (line) => {
+            logs.push(line);
+          };
+          loader.one('syncinfoupdate', function() {
+            resolve();
+          });
+          loader.one('error', reject);
+          standardXHRResponse(this.requests.shift(), videoSegment());
+
+        });
+      }).then(() => {
+        this.clock.tick(1);
+        assert.equal(appends.length, 1, 'still only one append');
+        assert.true(
+          logs.some((l) => (/^sync segment was incorrect, not appending/).test(l)),
+          'has log line'
+        );
+        assert.true(
+          logs.some((l) => (/^Throwing away un-appended sync request segment/).test(l)),
+          'has log line'
+        );
+      });
+    });
+
     QUnit.test('re-appends init segments on discontinuity', function(assert) {
       const appends = [];
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const origAppendToSourceBuffer = loader.appendToSourceBuffer_.bind(loader);
 
         loader.appendToSourceBuffer_ = (config) => {
@@ -2901,7 +3731,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       const appends = [];
       const oldTrackInfo = loader.handleTrackInfo_;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const origAppendToSourceBuffer = loader.appendToSourceBuffer_.bind(loader);
 
         loader.appendToSourceBuffer_ = (config) => {
@@ -2956,7 +3786,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       }), {});
       const appends = [];
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, {isAudioOnly: true}).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, {isAudioOnly: true}).then(() => {
         const origAppendToSourceBuffer = loader.appendToSourceBuffer_.bind(loader);
 
         loader.appendToSourceBuffer_ = (config) => {
@@ -2964,7 +3794,7 @@ QUnit.module('SegmentLoader', function(hooks) {
           origAppendToSourceBuffer(config);
         };
 
-        const playlist = playlistWithDuration(30);
+        const playlist = playlistWithDuration(40);
 
         playlist.segments[0].map = {
           resolvedUri: 'init.mp4',
@@ -2977,6 +3807,11 @@ QUnit.module('SegmentLoader', function(hooks) {
         };
         // reuse the initial map to see if it was cached
         playlist.segments[2].map = {
+          resolvedUri: 'init.mp4',
+          byterange: { length: Infinity, offset: 0 }
+        };
+
+        playlist.segments[3].map = {
           resolvedUri: 'init.mp4',
           byterange: { length: Infinity, offset: 0 }
         };
@@ -3027,6 +3862,9 @@ QUnit.module('SegmentLoader', function(hooks) {
           appends[1].initSegment,
           'appended a different init segment'
         );
+        // force init segment append to prove that init segments are not
+        // re-requested, but will be re-appended when needed.
+        loader.appendInitSegment_.audio = true;
 
         // no init segment request, as it should be the same (and cached) segment
         standardXHRResponse(this.requests.shift(), mp4AudioSegment());
@@ -3035,6 +3873,7 @@ QUnit.module('SegmentLoader', function(hooks) {
           loader.one('error', reject);
         });
       }).then(() => {
+        this.clock.tick(1);
 
         assert.equal(appends.length, 3, 'one more append');
         assert.equal(appends[2].type, 'audio', 'appended to audio buffer');
@@ -3044,48 +3883,64 @@ QUnit.module('SegmentLoader', function(hooks) {
           appends[2].initSegment,
           'reused the init segment'
         );
+
+        // no init segment request, as it should be the same (and cached) segment
+        standardXHRResponse(this.requests.shift(), mp4AudioSegment());
+        return new Promise((resolve, reject) => {
+          loader.one('appended', resolve);
+          loader.one('error', reject);
+        });
+      }).then(() => {
+        assert.equal(appends.length, 4, 'one more append');
+        assert.equal(appends[3].type, 'audio', 'appended to audio buffer');
+        assert.notOk(appends[3].initSegment, 'did not append audio init segment');
       });
     });
 
     QUnit.test('stores and reuses video init segments from map tag', function(assert) {
       const appends = [];
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, {isVideoOnly: true}).then(() => {
-        const origAppendToSourceBuffer = loader.appendToSourceBuffer_.bind(loader);
-
-        loader.appendToSourceBuffer_ = (config) => {
-          appends.push(config);
-          origAppendToSourceBuffer(config);
-        };
-
-        const playlist = playlistWithDuration(30);
-
-        playlist.segments[0].map = {
-          resolvedUri: 'init.mp4',
-          byterange: { length: Infinity, offset: 0 }
-        };
-        // change the map tag as we won't re-append the init segment if it hasn't changed
-        playlist.segments[1].map = {
-          resolvedUri: 'init2.mp4',
-          byterange: { length: 100, offset: 10 }
-        };
-        // reuse the initial map to see if it was cached
-        playlist.segments[2].map = {
-          resolvedUri: 'init.mp4',
-          byterange: { length: Infinity, offset: 0 }
-        };
-
-        loader.playlist(playlist);
-        loader.load();
-        this.clock.tick(1);
-
-        // init
-        standardXHRResponse(this.requests.shift(), mp4VideoInitSegment());
-        // segment
-        standardXHRResponse(this.requests.shift(), mp4VideoSegment());
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_, {isVideoOnly: true}).then(() => {
         return new Promise((resolve, reject) => {
           loader.one('appended', resolve);
           loader.one('error', reject);
+          const origAppendToSourceBuffer = loader.appendToSourceBuffer_.bind(loader);
+
+          loader.appendToSourceBuffer_ = (config) => {
+            appends.push(config);
+            origAppendToSourceBuffer(config);
+          };
+
+          const playlist = playlistWithDuration(40);
+
+          playlist.segments[0].map = {
+            resolvedUri: 'init.mp4',
+            byterange: { length: Infinity, offset: 0 }
+          };
+          // change the map tag as we won't re-append the init segment if it hasn't changed
+          playlist.segments[1].map = {
+            resolvedUri: 'init2.mp4',
+            byterange: { length: 100, offset: 10 }
+          };
+          // reuse the initial map to see if it was cached
+          playlist.segments[2].map = {
+            resolvedUri: 'init.mp4',
+            byterange: { length: Infinity, offset: 0 }
+          };
+
+          playlist.segments[3].map = {
+            resolvedUri: 'init.mp4',
+            byterange: { length: Infinity, offset: 0 }
+          };
+
+          loader.playlist(playlist);
+          loader.load();
+          this.clock.tick(1);
+
+          // init
+          standardXHRResponse(this.requests.shift(), mp4VideoInitSegment());
+          // segment
+          standardXHRResponse(this.requests.shift(), mp4VideoSegment());
         });
       }).then(() => {
         this.clock.tick(1);
@@ -3114,6 +3969,10 @@ QUnit.module('SegmentLoader', function(hooks) {
           'appended a different init segment'
         );
 
+        // force init segment append to prove that init segments are not
+        // re-requested, but will be re-appended when needed.
+        loader.appendInitSegment_.video = true;
+
         // no init segment request, as it should be the same (and cached) segment
         standardXHRResponse(this.requests.shift(), mp4VideoSegment());
         return new Promise((resolve, reject) => {
@@ -3121,6 +3980,7 @@ QUnit.module('SegmentLoader', function(hooks) {
           loader.one('error', reject);
         });
       }).then(() => {
+        this.clock.tick(1);
 
         assert.equal(appends.length, 3, 'one more append');
         assert.equal(appends[2].type, 'video', 'appended to video buffer');
@@ -3130,6 +3990,17 @@ QUnit.module('SegmentLoader', function(hooks) {
           appends[2].initSegment,
           'reused the init segment'
         );
+
+        // no init segment request, as it should be the same (and cached) segment
+        standardXHRResponse(this.requests.shift(), mp4VideoSegment());
+        return new Promise((resolve, reject) => {
+          loader.one('appended', resolve);
+          loader.one('error', reject);
+        });
+      }).then(() => {
+        assert.equal(appends.length, 4, 'one more append');
+        assert.equal(appends[3].type, 'video', 'appended to video buffer');
+        assert.notOk(appends[3].initSegment, 'did not append video init segment');
       });
     });
 
@@ -3146,7 +4017,7 @@ QUnit.module('SegmentLoader', function(hooks) {
         return { track: { addCue: () => {} } };
       };
 
-      return setupMediaSource(loader.mediaSource_, sourceUpdater).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, sourceUpdater).then(() => {
         return new Promise((resolve, reject) => {
           loader.one('appended', resolve);
           loader.one('error', reject);
@@ -3252,12 +4123,12 @@ QUnit.module('SegmentLoader', function(hooks) {
       const videoTimestampOffsets = [];
       const transmuxerTimestampOffsets = [];
       const sourceUpdater = loader.sourceUpdater_;
-      let buffered = videojs.createTimeRanges();
+      let buffered = createTimeRanges();
       let timestampOffsetOverride;
 
       loader.buffered_ = () => buffered;
 
-      return setupMediaSource(loader.mediaSource_, sourceUpdater).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, sourceUpdater).then(() => {
         const origAudioTimestampOffset =
           sourceUpdater.audioTimestampOffset.bind(sourceUpdater);
         const origVideoTimestampOffset =
@@ -3330,7 +4201,7 @@ QUnit.module('SegmentLoader', function(hooks) {
         // start is before the timestamp offset, it should be appended without changing the
         // timestamp offset, as issues were seen when the timestamp offset was changed
         // without an actual timeline change.
-        buffered = videojs.createTimeRanges([[0, 10]]);
+        buffered = createTimeRanges([[0, 10]]);
         timestampOffsetOverride = 11;
 
         this.clock.tick(1);
@@ -3359,7 +4230,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     });
 
     QUnit.test('main buffered uses video buffer when audio disabled', function(assert) {
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const playlist = playlistWithDuration(40);
 
         loader.playlist(playlist);
@@ -3376,28 +4247,28 @@ QUnit.module('SegmentLoader', function(hooks) {
         // mock the buffered values (easiest solution to test that segment-loader is
         // calling the correct functions)
         loader.sourceUpdater_.audioBuffered =
-          () => videojs.createTimeRanges([[2, 3], [5, 7]]);
+          () => createTimeRanges([[2, 3], [5, 7]]);
         loader.sourceUpdater_.videoBuffered =
-          () => videojs.createTimeRanges([[2, 6]]);
+          () => createTimeRanges([[2, 6]]);
         loader.sourceUpdater_.buffered =
-          () => videojs.createTimeRanges([[2, 3], [5, 6]]);
+          () => createTimeRanges([[2, 3], [5, 6]]);
 
         timeRangesEqual(
           loader.buffered_(),
-          videojs.createTimeRanges([[2, 3], [5, 6]]),
+          createTimeRanges([[2, 3], [5, 6]]),
           'buffered reports intersection of audio and video buffers'
         );
         loader.setAudio(false);
         timeRangesEqual(
           loader.buffered_(),
-          videojs.createTimeRanges([[2, 6]]),
+          createTimeRanges([[2, 6]]),
           'buffered reports video buffered'
         );
       });
     });
 
     QUnit.test('main buffered uses video buffer when video only', function(assert) {
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const playlist = playlistWithDuration(40);
 
         loader.playlist(playlist);
@@ -3414,28 +4285,28 @@ QUnit.module('SegmentLoader', function(hooks) {
         // mock the buffered values (easiest solution to test that segment-loader is
         // calling the correct functions)
         loader.sourceUpdater_.audioBuffered =
-          () => videojs.createTimeRanges([[2, 3], [5, 7]]);
+          () => createTimeRanges([[2, 3], [5, 7]]);
         loader.sourceUpdater_.videoBuffered =
-          () => videojs.createTimeRanges([[2, 6]]);
+          () => createTimeRanges([[2, 6]]);
         loader.sourceUpdater_.buffered =
-          () => videojs.createTimeRanges([[2, 3], [5, 6]]);
+          () => createTimeRanges([[2, 3], [5, 6]]);
 
         timeRangesEqual(
           loader.buffered_(),
-          videojs.createTimeRanges([[2, 6]]),
+          createTimeRanges([[2, 6]]),
           'buffered reports video buffered'
         );
         loader.setAudio(false);
         timeRangesEqual(
           loader.buffered_(),
-          videojs.createTimeRanges([[2, 6]]),
+          createTimeRanges([[2, 6]]),
           'buffered reports video buffered'
         );
       });
     });
 
     QUnit.test('main buffered uses audio buffer when audio only', function(assert) {
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         return new Promise((resolve, reject) => {
           loader.one('appended', resolve);
           loader.one('error', reject);
@@ -3453,15 +4324,15 @@ QUnit.module('SegmentLoader', function(hooks) {
         // mock the buffered values (easiest solution to test that segment-loader is
         // calling the correct functions)
         loader.sourceUpdater_.audioBuffered =
-          () => videojs.createTimeRanges([[2, 3], [5, 7]]);
+          () => createTimeRanges([[2, 3], [5, 7]]);
         loader.sourceUpdater_.videoBuffered =
-          () => videojs.createTimeRanges([[2, 6]]);
+          () => createTimeRanges([[2, 6]]);
         loader.sourceUpdater_.buffered =
-          () => videojs.createTimeRanges([[2, 3], [5, 6]]);
+          () => createTimeRanges([[2, 3], [5, 6]]);
 
         timeRangesEqual(
           loader.buffered_(),
-          videojs.createTimeRanges([[2, 3], [5, 7]]),
+          createTimeRanges([[2, 3], [5, 7]]),
           'buffered reports audio buffered'
         );
         // note that there currently is no proper support for audio only with alt audio,
@@ -3477,7 +4348,7 @@ QUnit.module('SegmentLoader', function(hooks) {
 
       this.fakeMainTimelineChange();
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         return new Promise((resolve, reject) => {
           loader.one('appended', resolve);
           loader.one('error', reject);
@@ -3495,15 +4366,15 @@ QUnit.module('SegmentLoader', function(hooks) {
         // mock the buffered values (easiest solution to test that segment-loader is
         // calling the correct functions)
         loader.sourceUpdater_.audioBuffered =
-          () => videojs.createTimeRanges([[2, 3], [5, 7]]);
+          () => createTimeRanges([[2, 3], [5, 7]]);
         loader.sourceUpdater_.videoBuffered =
-          () => videojs.createTimeRanges([[2, 6]]);
+          () => createTimeRanges([[2, 6]]);
         loader.sourceUpdater_.buffered =
-          () => videojs.createTimeRanges([[2, 3], [5, 6]]);
+          () => createTimeRanges([[2, 3], [5, 6]]);
 
         timeRangesEqual(
           loader.buffered_(),
-          videojs.createTimeRanges([[2, 3], [5, 7]]),
+          createTimeRanges([[2, 3], [5, 7]]),
           'buffered reports audio buffered'
         );
       });
@@ -3517,7 +4388,7 @@ QUnit.module('SegmentLoader', function(hooks) {
 
       this.fakeMainTimelineChange();
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const playlist = playlistWithDuration(40);
 
         loader.playlist(playlist);
@@ -3534,22 +4405,22 @@ QUnit.module('SegmentLoader', function(hooks) {
         // mock the buffered values (easiest solution to test that segment-loader is
         // calling the correct functions)
         loader.sourceUpdater_.audioBuffered =
-          () => videojs.createTimeRanges([[2, 3], [5, 7]]);
+          () => createTimeRanges([[2, 3], [5, 7]]);
         loader.sourceUpdater_.videoBuffered =
-          () => videojs.createTimeRanges([[2, 6]]);
+          () => createTimeRanges([[2, 6]]);
         loader.sourceUpdater_.buffered =
-          () => videojs.createTimeRanges([[2, 3], [5, 6]]);
+          () => createTimeRanges([[2, 3], [5, 6]]);
 
         timeRangesEqual(
           loader.buffered_(),
-          videojs.createTimeRanges([[2, 3], [5, 7]]),
+          createTimeRanges([[2, 3], [5, 7]]),
           'buffered reports audio buffered'
         );
       });
     });
 
     QUnit.test('can get buffered between playlists', function(assert) {
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const playlist = playlistWithDuration(40);
 
         loader.playlist(playlist);
@@ -3566,15 +4437,15 @@ QUnit.module('SegmentLoader', function(hooks) {
         // mock the buffered values (easiest solution to test that segment-loader is
         // calling the correct functions)
         loader.sourceUpdater_.audioBuffered =
-          () => videojs.createTimeRanges([[2, 3], [5, 7]]);
+          () => createTimeRanges([[2, 3], [5, 7]]);
         loader.sourceUpdater_.videoBuffered =
-          () => videojs.createTimeRanges([[2, 6]]);
+          () => createTimeRanges([[2, 6]]);
         loader.sourceUpdater_.buffered =
-          () => videojs.createTimeRanges([[2, 3], [5, 6]]);
+          () => createTimeRanges([[2, 3], [5, 6]]);
 
         timeRangesEqual(
           loader.buffered_(),
-          videojs.createTimeRanges([[2, 3], [5, 6]]),
+          createTimeRanges([[2, 3], [5, 6]]),
           'buffered reports intersection of audio and video buffers'
         );
         const playlist2 = playlistWithDuration(40, {uri: 'playlist2.m3u8'});
@@ -3583,7 +4454,7 @@ QUnit.module('SegmentLoader', function(hooks) {
 
         timeRangesEqual(
           loader.buffered_(),
-          videojs.createTimeRanges([[2, 3], [5, 6]]),
+          createTimeRanges([[2, 3], [5, 6]]),
           'buffered reports intersection of audio and video buffers'
         );
 
@@ -3591,7 +4462,7 @@ QUnit.module('SegmentLoader', function(hooks) {
 
         timeRangesEqual(
           loader.buffered_(),
-          videojs.createTimeRanges([[2, 3], [5, 6]]),
+          createTimeRanges([[2, 3], [5, 6]]),
           'buffered reports intersection of audio and video buffers'
         );
       });
@@ -3672,7 +4543,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       } = loader;
       const mediaSettings = { isVideoOnly: true };
 
-      return setupMediaSource(mediaSource, sourceUpdater, mediaSettings).then(() => {
+      return this.setupMediaSource(mediaSource, sourceUpdater, mediaSettings).then(() => {
         loader.playlist(playlist);
         loader.load();
 
@@ -3731,7 +4602,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       } = loader;
       const mediaSettings = { isVideoOnly: true };
 
-      return setupMediaSource(mediaSource, sourceUpdater, mediaSettings).then(() => {
+      return this.setupMediaSource(mediaSource, sourceUpdater, mediaSettings).then(() => {
         loader.playlist(playlist);
         loader.load();
 
@@ -3800,7 +4671,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       } = loader;
       const mediaSettings = { isAudioOnly: true };
 
-      return setupMediaSource(mediaSource, sourceUpdater, mediaSettings).then(() => {
+      return this.setupMediaSource(mediaSource, sourceUpdater, mediaSettings).then(() => {
         loader.playlist(playlist);
         loader.load();
 
@@ -3859,7 +4730,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       } = loader;
       const mediaSettings = { isAudioOnly: true };
 
-      return setupMediaSource(mediaSource, sourceUpdater, mediaSettings).then(() => {
+      return this.setupMediaSource(mediaSource, sourceUpdater, mediaSettings).then(() => {
         loader.playlist(playlist);
         loader.load();
 
@@ -3932,11 +4803,11 @@ QUnit.module('SegmentLoader', function(hooks) {
       const playlist1 = playlistWithDuration(
         playlistDuration,
         // need different URIs to ensure the playlists are considered different
-        videojs.mergeOptions(playlistOptions, { uri: 'playlist1.m3u8' })
+        merge(playlistOptions, { uri: 'playlist1.m3u8' })
       );
       const playlist2 = playlistWithDuration(
         playlistDuration,
-        videojs.mergeOptions(playlistOptions, { uri: 'playlist2.m3u8' })
+        merge(playlistOptions, { uri: 'playlist2.m3u8' })
       );
 
       const segmentDurationMs = targetDuration * 1000;
@@ -3968,7 +4839,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       } = loader;
       const mediaSettings = { isVideoOnly: true };
 
-      return setupMediaSource(mediaSource, sourceUpdater, mediaSettings).then(() => {
+      return this.setupMediaSource(mediaSource, sourceUpdater, mediaSettings).then(() => {
         loader.playlist(playlist1);
 
         // uses private property of sync controller because there isn't a great way
@@ -4039,17 +4910,14 @@ QUnit.module('SegmentLoader', function(hooks) {
       // PDT mapping changes, but when changing renditions over a timeline change, the new
       // mapping will lead to an incorrect value if the different timeline mappings are
       // not accounted for.
-      //
-      // This is mainly an issue with smooth quality change, as that is when the loader
-      // will overlap content.
       const playlist1 = playlistWithDuration(
         playlistDuration,
         // need different URIs to ensure the playlists are considered different
-        videojs.mergeOptions(playlistOptions, { uri: 'playlist1.m3u8' })
+        merge(playlistOptions, { uri: 'playlist1.m3u8' })
       );
       const playlist2 = playlistWithDuration(
         playlistDuration,
-        videojs.mergeOptions(playlistOptions, { uri: 'playlist2.m3u8' })
+        merge(playlistOptions, { uri: 'playlist2.m3u8' })
       );
 
       loader.currentTime_ = () => currentTime;
@@ -4077,7 +4945,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       } = loader;
       const mediaSettings = { isVideoOnly: true };
 
-      return setupMediaSource(mediaSource, sourceUpdater, mediaSettings).then(() => {
+      return this.setupMediaSource(mediaSource, sourceUpdater, mediaSettings).then(() => {
         loader.playlist(playlist1);
         loader.load();
 
@@ -4131,9 +4999,6 @@ QUnit.module('SegmentLoader', function(hooks) {
         // wrong, since the gap in ProgramDateTime was not accounted for.
         currentTime = 2.8;
         loader.playlist(playlist2);
-        // smoothQualityChange will reset loader after changing renditions, so need to
-        // mimic that behavior here in order for content to be overlayed over already
-        // buffered content.
         loader.resetLoader();
         this.clock.tick(1);
 
@@ -4153,7 +5018,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     });
 
     QUnit.test('QUOTA_EXCEEDED_ERR no loader error triggered', function(assert) {
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const playlist = playlistWithDuration(40);
 
         loader.playlist(playlist);
@@ -4161,8 +5026,8 @@ QUnit.module('SegmentLoader', function(hooks) {
         this.clock.tick(1);
 
         // mock some buffer to prevent an error from not being able to clear any buffer
-        loader.sourceUpdater_.audioBuffered = () => videojs.createTimeRanges([0, 5]);
-        loader.sourceUpdater_.videoBuffered = () => videojs.createTimeRanges([0, 5]);
+        loader.sourceUpdater_.audioBuffered = () => createTimeRanges([0, 5]);
+        loader.sourceUpdater_.videoBuffered = () => createTimeRanges([0, 5]);
 
         loader.sourceUpdater_.appendBuffer = ({type, bytes}, callback) => {
           callback({type: 'QUOTA_EXCEEDED_ERR', code: QUOTA_EXCEEDED_ERR});
@@ -4174,7 +5039,7 @@ QUnit.module('SegmentLoader', function(hooks) {
     });
 
     QUnit.test('QUOTA_EXCEEDED_ERR triggers error if no room for single segment', function(assert) {
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         return new Promise((resolve, reject) => {
           const playlist = playlistWithDuration(40);
 
@@ -4200,7 +5065,7 @@ QUnit.module('SegmentLoader', function(hooks) {
           loader.error_,
           {
             message: 'Quota exceeded error with append of a single segment of content',
-            blacklistDuration: Infinity
+            excludeUntil: Infinity
           },
           'loader triggered and saved the error'
         );
@@ -4212,7 +5077,7 @@ QUnit.module('SegmentLoader', function(hooks) {
       const removeAudioCalls = [];
       let origAppendBuffer;
 
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const playlist = playlistWithDuration(40);
 
         loader.playlist(playlist);
@@ -4221,8 +5086,8 @@ QUnit.module('SegmentLoader', function(hooks) {
 
         // mock some buffer and the playhead position
         loader.currentTime_ = () => 7;
-        loader.sourceUpdater_.audioBuffered = () => videojs.createTimeRanges([2, 10]);
-        loader.sourceUpdater_.videoBuffered = () => videojs.createTimeRanges([0, 10]);
+        loader.sourceUpdater_.audioBuffered = () => createTimeRanges([2, 10]);
+        loader.sourceUpdater_.videoBuffered = () => createTimeRanges([0, 10]);
 
         loader.sourceUpdater_.removeVideo = (start, end, done) => {
           assert.ok(loader.waitingOnRemove_, 'waiting on buffer removal to complete');
@@ -4313,7 +5178,14 @@ QUnit.module('SegmentLoader: FMP4', function(hooks) {
 
   LoaderCommonFactory({
     LoaderConstructor: SegmentLoader,
-    loaderSettings: {loaderType: 'main'}
+    loaderSettings: {loaderType: 'main'},
+    // TODO change to encrypted FMP4s when supported
+    //
+    // This segment should be an encrypted FMP4, however, right now in the code there's no
+    // support for an encrypted map tag, as the IV is not passed along. When that support
+    // is added, change this segment to an encrypted FMP4.
+    encryptedSegmentFn: encryptedSegment,
+    encryptedSegmentKeyFn: encryptionKey
   });
 
   // Tests specific to the main segment loader go in this module
@@ -4340,7 +5212,7 @@ QUnit.module('SegmentLoader: FMP4', function(hooks) {
     });
 
     QUnit.test('CaptionParser messages sent as expected', function(assert) {
-      return setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
+      return this.setupMediaSource(loader.mediaSource_, loader.sourceUpdater_).then(() => {
         const actions = {};
 
         loader.transmuxer_.postMessage = ({action}) => {

@@ -2,15 +2,17 @@
  * @file sync-controller.js
  */
 
-import {sumDurations} from './playlist';
+import {sumDurations, getPartsAndSegments} from './playlist';
 import videojs from 'video.js';
 import logger from './util/logger';
+import {MediaSequenceSync, DependantMediaSequenceSync} from './util/media-sequence-sync';
 
-const getSegmentIndex = (i, playlist, currentTime = 0) => {
-  const segments = playlist.segments;
-
-  return (playlist.endList || currentTime === 0) ? i : segments.length - (i + 1);
-};
+// The maximum gap allowed between two media sequence tags when trying to
+// synchronize expired playlist segments.
+// the max media sequence diff is 48 hours of live stream
+// content with two second segments. Anything larger than that
+// will likely be invalid.
+const MAX_MEDIA_SEQUENCE_DIFF_FOR_SYNC = 86400;
 
 export const syncPointStrategies = [
   // Stategy "VOD": Handle the VOD-case where the sync-point is *always*
@@ -21,12 +23,49 @@ export const syncPointStrategies = [
       if (duration !== Infinity) {
         const syncPoint = {
           time: 0,
-          segmentIndex: 0
+          segmentIndex: 0,
+          partIndex: null
         };
 
         return syncPoint;
       }
       return null;
+    }
+  },
+  {
+    name: 'MediaSequence',
+    /**
+     * run media sequence strategy
+     *
+     * @param {SyncController} syncController
+     * @param {Object} playlist
+     * @param {number} duration
+     * @param {number} currentTimeline
+     * @param {number} currentTime
+     * @param {string} type
+     */
+    run: (syncController, playlist, duration, currentTimeline, currentTime, type) => {
+      const mediaSequenceSync = syncController.getMediaSequenceSync(type);
+
+      if (!mediaSequenceSync) {
+        return null;
+      }
+
+      if (!mediaSequenceSync.isReliable) {
+        return null;
+      }
+
+      const syncInfo = mediaSequenceSync.getSyncInfoForTime(currentTime);
+
+      if (!syncInfo) {
+        return null;
+      }
+
+      return {
+        time: syncInfo.start,
+        partIndex: syncInfo.partIndex,
+        segmentIndex: syncInfo.segmentIndex
+      };
     }
   },
   // Stategy "ProgramDateTime": We have a program-date-time tag in this playlist
@@ -37,39 +76,47 @@ export const syncPointStrategies = [
         return null;
       }
 
-      const segments = playlist.segments || [];
       let syncPoint = null;
       let lastDistance = null;
+      const partsAndSegments = getPartsAndSegments(playlist);
 
       currentTime = currentTime || 0;
-
-      for (let i = 0; i < segments.length; i++) {
-        const segmentIndex = getSegmentIndex(i, playlist, currentTime);
-        const segment = segments[segmentIndex];
+      for (let i = 0; i < partsAndSegments.length; i++) {
+        // start from the end and loop backwards for live
+        // or start from the front and loop forwards for non-live
+        const index = (playlist.endList || currentTime === 0) ? i : partsAndSegments.length - (i + 1);
+        const partAndSegment = partsAndSegments[index];
+        const segment = partAndSegment.segment;
         const datetimeMapping =
           syncController.timelineToDatetimeMappings[segment.timeline];
 
-        if (!datetimeMapping) {
+        if (!datetimeMapping || !segment.dateTimeObject) {
           continue;
         }
 
-        if (segment.dateTimeObject) {
-          const segmentTime = segment.dateTimeObject.getTime() / 1000;
-          const segmentStart = segmentTime + datetimeMapping;
-          const distance = Math.abs(currentTime - segmentStart);
+        const segmentTime = segment.dateTimeObject.getTime() / 1000;
+        let start = segmentTime + datetimeMapping;
 
-          // Once the distance begins to increase, or if distance is 0, we have passed
-          // currentTime and can stop looking for better candidates
-          if (lastDistance !== null && (distance === 0 || lastDistance < distance)) {
-            break;
+        // take part duration into account.
+        if (segment.parts && typeof partAndSegment.partIndex === 'number') {
+          for (let z = 0; z < partAndSegment.partIndex; z++) {
+            start += segment.parts[z].duration;
           }
-
-          lastDistance = distance;
-          syncPoint = {
-            time: segmentStart,
-            segmentIndex
-          };
         }
+        const distance = Math.abs(currentTime - start);
+
+        // Once the distance begins to increase, or if distance is 0, we have passed
+        // currentTime and can stop looking for better candidates
+        if (lastDistance !== null && (distance === 0 || lastDistance < distance)) {
+          break;
+        }
+
+        lastDistance = distance;
+        syncPoint = {
+          time: start,
+          segmentIndex: partAndSegment.segmentIndex,
+          partIndex: partAndSegment.partIndex
+        };
       }
       return syncPoint;
     }
@@ -79,19 +126,22 @@ export const syncPointStrategies = [
   {
     name: 'Segment',
     run: (syncController, playlist, duration, currentTimeline, currentTime) => {
-      const segments = playlist.segments || [];
       let syncPoint = null;
       let lastDistance = null;
 
       currentTime = currentTime || 0;
+      const partsAndSegments = getPartsAndSegments(playlist);
 
-      for (let i = 0; i < segments.length; i++) {
-        const segmentIndex = getSegmentIndex(i, playlist, currentTime);
-        const segment = segments[segmentIndex];
+      for (let i = 0; i < partsAndSegments.length; i++) {
+        // start from the end and loop backwards for live
+        // or start from the front and loop forwards for non-live
+        const index = (playlist.endList || currentTime === 0) ? i : partsAndSegments.length - (i + 1);
+        const partAndSegment = partsAndSegments[index];
+        const segment = partAndSegment.segment;
+        const start = partAndSegment.part && partAndSegment.part.start || segment && segment.start;
 
-        if (segment.timeline === currentTimeline &&
-            typeof segment.start !== 'undefined') {
-          const distance = Math.abs(currentTime - segment.start);
+        if (segment.timeline === currentTimeline && typeof start !== 'undefined') {
+          const distance = Math.abs(currentTime - start);
 
           // Once the distance begins to increase, we have passed
           // currentTime and can stop looking for better candidates
@@ -102,8 +152,9 @@ export const syncPointStrategies = [
           if (!syncPoint || lastDistance === null || lastDistance >= distance) {
             lastDistance = distance;
             syncPoint = {
-              time: segment.start,
-              segmentIndex
+              time: start,
+              segmentIndex: partAndSegment.segmentIndex,
+              partIndex: partAndSegment.partIndex
             };
           }
 
@@ -142,7 +193,8 @@ export const syncPointStrategies = [
               lastDistance = distance;
               syncPoint = {
                 time: discontinuitySync.time,
-                segmentIndex
+                segmentIndex,
+                partIndex: null
               };
             }
           }
@@ -159,7 +211,8 @@ export const syncPointStrategies = [
       if (playlist.syncInfo) {
         const syncPoint = {
           time: playlist.syncInfo.time,
-          segmentIndex: playlist.syncInfo.mediaSequence - playlist.mediaSequence
+          segmentIndex: playlist.syncInfo.mediaSequence - playlist.mediaSequence,
+          partIndex: null
         };
 
         return syncPoint;
@@ -176,8 +229,25 @@ export default class SyncController extends videojs.EventTarget {
     this.timelines = [];
     this.discontinuities = [];
     this.timelineToDatetimeMappings = {};
+    // TODO: this map should be only available for HLS. Since only HLS has MediaSequence.
+    //  For some reason this map helps with syncing between quality switch for MPEG-DASH as well.
+    //  Moreover if we disable this map for MPEG-DASH - quality switch will be broken.
+    //  MPEG-DASH should have its own separate sync strategy
+    const main = new MediaSequenceSync();
+    const audio = new DependantMediaSequenceSync(main);
+    const vtt = new DependantMediaSequenceSync(main);
 
+    this.mediaSequenceStorage_ = {main, audio, vtt};
     this.logger_ = logger('SyncController');
+  }
+
+  /**
+   *
+   * @param {string} loaderType
+   * @return {MediaSequenceSync|null}
+   */
+  getMediaSequenceSync(loaderType) {
+    return this.mediaSequenceStorage_[loaderType] || null;
   }
 
   /**
@@ -192,15 +262,27 @@ export default class SyncController extends videojs.EventTarget {
    *        Duration of the MediaSource (Infinite if playing a live source)
    * @param {number} currentTimeline
    *        The last timeline from which a segment was loaded
+   * @param {number} currentTime
+   *        Current player's time
+   * @param {string} type
+   *        Segment loader type
    * @return {Object}
    *          A sync-point object
    */
-  getSyncPoint(playlist, duration, currentTimeline, currentTime) {
+  getSyncPoint(playlist, duration, currentTimeline, currentTime, type) {
+    // Always use VOD sync point for VOD
+    if (duration !== Infinity) {
+      const vodSyncPointStrategy = syncPointStrategies.find(({ name }) => name === 'VOD');
+
+      return vodSyncPointStrategy.run(this, playlist, duration);
+    }
+
     const syncPoints = this.runStrategies_(
       playlist,
       duration,
       currentTimeline,
-      currentTime
+      currentTime,
+      type
     );
 
     if (!syncPoints.length) {
@@ -208,6 +290,28 @@ export default class SyncController extends videojs.EventTarget {
       // by fetching a segment in the playlist and constructing
       // a sync-point from that information
       return null;
+    }
+
+    // If we have exact match just return it instead of finding the nearest distance
+    for (const syncPointInfo of syncPoints) {
+      const { syncPoint, strategy } = syncPointInfo;
+      const { segmentIndex, time } = syncPoint;
+
+      if (segmentIndex < 0) {
+        continue;
+      }
+
+      const selectedSegment = playlist.segments[segmentIndex];
+
+      const start = time;
+      const end = start + selectedSegment.duration;
+
+      this.logger_(`Strategy: ${strategy}. Current time: ${currentTime}. selected segment: ${segmentIndex}. Time: [${start} -> ${end}]}`);
+
+      if (currentTime >= start && currentTime < end) {
+        this.logger_('Found sync point with exact match: ', syncPoint);
+        return syncPoint;
+      }
     }
 
     // Now find the sync-point that is closest to the currentTime because
@@ -255,7 +359,12 @@ export default class SyncController extends videojs.EventTarget {
       syncPoint.time *= -1;
     }
 
-    return Math.abs(syncPoint.time + sumDurations(playlist, syncPoint.segmentIndex, 0));
+    return Math.abs(syncPoint.time + sumDurations({
+      defaultDuration: playlist.targetDuration,
+      durationList: playlist.segments,
+      startIndex: syncPoint.segmentIndex,
+      endIndex: 0
+    }));
   }
 
   /**
@@ -269,10 +378,14 @@ export default class SyncController extends videojs.EventTarget {
    *        Duration of the MediaSource (Infinity if playing a live source)
    * @param {number} currentTimeline
    *        The last timeline from which a segment was loaded
+   * @param {number} currentTime
+   *        Current player's time
+   * @param {string} type
+   *        Segment loader type
    * @return {Array}
    *          A list of sync-point objects
    */
-  runStrategies_(playlist, duration, currentTimeline, currentTime) {
+  runStrategies_(playlist, duration, currentTimeline, currentTime, type) {
     const syncPoints = [];
 
     // Try to find a sync-point in by utilizing various strategies...
@@ -283,7 +396,8 @@ export default class SyncController extends videojs.EventTarget {
         playlist,
         duration,
         currentTimeline,
-        currentTime
+        currentTime,
+        type
       );
 
       if (syncPoint) {
@@ -330,7 +444,9 @@ export default class SyncController extends videojs.EventTarget {
 
     this.logger_(`syncPoint for [${target.key}: ${target.value}] chosen with strategy` +
       ` [${bestStrategy}]: [time:${bestSyncPoint.time},` +
-      ` segmentIndex:${bestSyncPoint.segmentIndex}]`);
+      ` segmentIndex:${bestSyncPoint.segmentIndex}` +
+      (typeof bestSyncPoint.partIndex === 'number' ? `,partIndex:${bestSyncPoint.partIndex}` : '') +
+      ']');
 
     return bestSyncPoint;
   }
@@ -345,6 +461,12 @@ export default class SyncController extends videojs.EventTarget {
    */
   saveExpiredSegmentInfo(oldPlaylist, newPlaylist) {
     const mediaSequenceDiff = newPlaylist.mediaSequence - oldPlaylist.mediaSequence;
+
+    // Ignore large media sequence gaps
+    if (mediaSequenceDiff > MAX_MEDIA_SEQUENCE_DIFF_FOR_SYNC) {
+      videojs.log.warn(`Not saving expired segment info. Media sequence gap ${mediaSequenceDiff} is too large.`);
+      return;
+    }
 
     // When a segment expires from the playlist and it has a start time
     // save that information as a possible sync-point reference in future
@@ -457,8 +579,12 @@ export default class SyncController extends videojs.EventTarget {
    *          Returns false if segment time mapping could not be calculated
    */
   calculateSegmentTimeMapping_(segmentInfo, timingInfo, shouldSaveTimelineMapping) {
+    // TODO: remove side effects
     const segment = segmentInfo.segment;
+    const part = segmentInfo.part;
     let mappingObj = this.timelines[segmentInfo.timeline];
+    let start;
+    let end;
 
     if (typeof segmentInfo.timestampOffset === 'number') {
       mappingObj = {
@@ -473,14 +599,30 @@ export default class SyncController extends videojs.EventTarget {
           `[time: ${mappingObj.time}] [mapping: ${mappingObj.mapping}]`);
       }
 
-      segment.start = segmentInfo.startOfSegment;
-      segment.end = timingInfo.end + mappingObj.mapping;
+      start = segmentInfo.startOfSegment;
+      end = timingInfo.end + mappingObj.mapping;
+
     } else if (mappingObj) {
-      segment.start = timingInfo.start + mappingObj.mapping;
-      segment.end = timingInfo.end + mappingObj.mapping;
+      start = timingInfo.start + mappingObj.mapping;
+      end = timingInfo.end + mappingObj.mapping;
     } else {
       return false;
     }
+
+    if (part) {
+      part.start = start;
+      part.end = end;
+    }
+
+    // If we don't have a segment start yet or the start value we got
+    // is less than our current segment.start value, save a new start value.
+    // We have to do this because parts will have segment timing info saved
+    // multiple times and we want segment start to be the earliest part start
+    // value for that segment.
+    if (!segment.start || start < segment.start) {
+      segment.start = start;
+    }
+    segment.end = end;
 
     return true;
   }
@@ -519,17 +661,19 @@ export default class SyncController extends videojs.EventTarget {
           let time;
 
           if (mediaIndexDiff < 0) {
-            time = segment.start - sumDurations(
-              playlist,
-              segmentInfo.mediaIndex,
-              segmentIndex
-            );
+            time = segment.start - sumDurations({
+              defaultDuration: playlist.targetDuration,
+              durationList: playlist.segments,
+              startIndex: segmentInfo.mediaIndex,
+              endIndex: segmentIndex
+            });
           } else {
-            time = segment.end + sumDurations(
-              playlist,
-              segmentInfo.mediaIndex + 1,
-              segmentIndex
-            );
+            time = segment.end + sumDurations({
+              defaultDuration: playlist.targetDuration,
+              durationList: playlist.segments,
+              startIndex: segmentInfo.mediaIndex + 1,
+              endIndex: segmentIndex
+            });
           }
 
           this.discontinuities[discontinuity] = {

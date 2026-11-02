@@ -3,17 +3,17 @@ import {createTransmuxer as createTransmuxer_} from '../src/segment-transmuxer.j
 import {
   mp4Captions as mp4CaptionsSegment,
   muxed as muxedSegment,
-  oneSecond as oneSecondSegment,
-  caption as captionSegment
+  caption as captionSegment,
+  mp4WebVttInit as webVttInit,
+  mp4WebVtt as webVttSegment
 } from 'create-test-data!segments';
 // needed for plugin registration
 import '../src/videojs-http-streaming';
 
-const createTransmuxer = (isPartial) => {
+const createTransmuxer = () => {
   return createTransmuxer_({
     remux: false,
-    keepOriginalTimestamps: true,
-    handlePartialData: isPartial
+    keepOriginalTimestamps: true
   });
 };
 
@@ -43,7 +43,7 @@ QUnit.module('Transmuxer Worker: Full Transmuxer', {
 QUnit.test('push should result in a trackinfo event', function(assert) {
   const done = assert.async();
 
-  this.transmuxer = createTransmuxer(false);
+  this.transmuxer = createTransmuxer();
   this.transmuxer.onmessage = (e) => {
     assert.equal(
       e.data.action,
@@ -145,7 +145,7 @@ QUnit.test('flush should return data from transmuxer', function(assert) {
     testDone();
   };
 
-  this.transmuxer = createTransmuxer(false);
+  this.transmuxer = createTransmuxer();
   this.transmuxer.onmessage = handleMessages;
 
   this.transmuxer.postMessage({
@@ -162,7 +162,7 @@ QUnit.test('reset will clear transmuxer', function(assert) {
   const done = assert.async();
   const messages = [];
 
-  this.transmuxer = createTransmuxer(false);
+  this.transmuxer = createTransmuxer();
   this.transmuxer.onmessage = (e) => {
     messages.push(e.data);
 
@@ -199,7 +199,7 @@ QUnit.test('endTimeline will return unflushed data', function(assert) {
   const done = assert.async();
   const messages = [];
 
-  this.transmuxer = createTransmuxer(false);
+  this.transmuxer = createTransmuxer();
   this.transmuxer.onmessage = (e) => {
     messages.push(e.data);
 
@@ -237,7 +237,7 @@ QUnit.test('caption events are returned', function(assert) {
   const done = assert.async();
   const messages = [];
 
-  this.transmuxer = createTransmuxer(false);
+  this.transmuxer = createTransmuxer();
   this.transmuxer.onmessage = (e) => {
     messages.push(e.data);
 
@@ -298,7 +298,11 @@ QUnit.test('caption events are returned', function(assert) {
     assert.deepEqual(
       messages[28].caption,
       {
-        text: 'Bip!',
+        content: [{
+          line: 15,
+          position: 45,
+          text: 'Bip!'
+        }],
         stream: 'CC1',
         startPts: 157500,
         endPts: 175500,
@@ -324,12 +328,13 @@ QUnit.test('can parse mp4 captions', function(assert) {
   const done = assert.async();
   const data = mp4CaptionsSegment();
 
-  this.transmuxer = createTransmuxer(false);
+  this.transmuxer = createTransmuxer();
   this.transmuxer.onmessage = (e) => {
     const message = e.data;
 
     assert.equal(message.action, 'mp4Captions', 'returned mp4Captions event');
     assert.deepEqual(message.captions.length, 2, 'two captions');
+    assert.deepEqual(message.logs.length, 0, 'no logs returned');
     assert.deepEqual(
       new Uint8Array(message.data),
       data,
@@ -353,7 +358,7 @@ QUnit.test('returns empty array without mp4 captions', function(assert) {
   const done = assert.async();
   const data = muxedSegment();
 
-  this.transmuxer = createTransmuxer(false);
+  this.transmuxer = createTransmuxer();
   this.transmuxer.onmessage = (e) => {
     const message = e.data;
 
@@ -378,6 +383,100 @@ QUnit.test('returns empty array without mp4 captions', function(assert) {
   });
 });
 
+QUnit.test('can parse mp4 webvtt segments', function(assert) {
+  const done = assert.async();
+  const initSegment = webVttInit();
+  const segment = webVttSegment();
+
+  this.transmuxer = createTransmuxer();
+  this.transmuxer.onmessage = (e) => {
+    const message = e.data;
+    const expectedCues = [
+      {
+        cueText: '2024-10-16T05:13:50Z\nen # 864527815',
+        end: 1729055630.9,
+        settings: undefined,
+        start: 1729055630
+      },
+      {
+        cueText: '2024-10-16T05:13:51Z\nen # 864527815',
+        end: 1729055631.9,
+        settings: undefined,
+        start: 1729055631
+      }
+    ];
+
+    assert.equal(message.action, 'getMp4WebVttText', 'returned getMp4WebVttText event');
+    assert.deepEqual(message.mp4VttCues, expectedCues, 'mp4 vtt cues are expected values');
+
+    done();
+  };
+
+  this.transmuxer.postMessage({
+    action: 'initMp4WebVttParser',
+    data: initSegment
+  });
+
+  this.transmuxer.postMessage({
+    action: 'getMp4WebVttText',
+    data: segment
+  });
+});
+
+QUnit.test('returns empty webVttCues array if segment is empty', function(assert) {
+  const done = assert.async();
+  const initSegment = webVttInit();
+  const segment = new Uint8Array();
+  const secondSegment = webVttSegment();
+  let callCount = 0;
+
+  this.transmuxer = createTransmuxer();
+  this.transmuxer.onmessage = (e) => {
+    const message = e.data;
+
+    callCount++;
+    if (callCount === 2) {
+      const secondExpectedCues = [
+        {
+          cueText: '2024-10-16T05:13:50Z\nen # 864527815',
+          end: 1729055630.9,
+          settings: undefined,
+          start: 1729055630
+        },
+        {
+          cueText: '2024-10-16T05:13:51Z\nen # 864527815',
+          end: 1729055631.9,
+          settings: undefined,
+          start: 1729055631
+        }
+      ];
+
+      assert.deepEqual(message.mp4VttCues, secondExpectedCues, 'mp4 vtt cues are expected values');
+      done();
+    } else {
+      const expectedCues = [];
+
+      assert.equal(message.action, 'getMp4WebVttText', 'returned getMp4WebVttText event');
+      assert.deepEqual(message.mp4VttCues, expectedCues, 'mp4 vtt cues are expected values');
+
+      this.transmuxer.postMessage({
+        action: 'getMp4WebVttText',
+        data: secondSegment
+      });
+    }
+  };
+
+  this.transmuxer.postMessage({
+    action: 'initMp4WebVttParser',
+    data: initSegment
+  });
+
+  this.transmuxer.postMessage({
+    action: 'getMp4WebVttText',
+    data: segment
+  });
+});
+
 QUnit.module('Transmuxer Worker: Partial Transmuxer', {
   beforeEach(assert) {
     assert.timeout(5000);
@@ -388,352 +487,4 @@ QUnit.module('Transmuxer Worker: Partial Transmuxer', {
       delete this.transmuxer;
     }
   }
-});
-
-// Missing tests as these are not accessible to unit testing
-// - setTimestampOffset
-// - setAudioAppendStart
-// - alignGopsWith
-
-QUnit.test('push should result in a trackinfo event', function(assert) {
-  const done = assert.async();
-
-  this.transmuxer = createTransmuxer(true);
-  this.transmuxer.onmessage = (e) => {
-    assert.equal(
-      e.data.action,
-      'trackinfo',
-      'pushing data should get trackinfo as the first event'
-    );
-    assert.deepEqual(
-      e.data.trackInfo,
-      {
-        hasVideo: true,
-        hasAudio: true
-      },
-      'should have video and audio'
-    );
-
-    done();
-  };
-
-  this.transmuxer.postMessage({
-    action: 'push',
-    data: muxedSegment()
-  });
-});
-
-QUnit.test('flush should return data from transmuxer', function(assert) {
-  const testDone = assert.async();
-  const messages = [];
-
-  const handleMessages = (e) => {
-    messages.push(e.data);
-
-    if (!isFinalDone(e)) {
-      return;
-    }
-
-    assert.deepEqual(
-      messages.map((x) => x.action),
-      [
-        'trackinfo',
-        'videoTimingInfo',
-        'data',
-        'data',
-        'done',
-        'audioTimingInfo',
-        'data',
-        'audioTimingInfo',
-        'done',
-        'done'
-      ],
-      'the events are received in the expected order'
-    );
-
-    const trackInfoEvent = messages.shift();
-    const videoTimingInfoEvent = messages.shift();
-    const data1 = messages.shift();
-    const data2 = messages.shift();
-    const done1 = messages.shift();
-    const audioTimingInfoEvent = messages.shift();
-    const data3 = messages.shift();
-    const audioTimingInfoEvent2 = messages.shift();
-    const done2 = messages.shift();
-
-    assert.ok(
-      trackInfoEvent.trackInfo,
-      'returns trackInfo with trackinfo event'
-    );
-    assert.ok(
-      videoTimingInfoEvent.videoTimingInfo,
-      'returns timing information with videoTimingInfo event'
-    );
-
-    assert.ok(
-      data1.segment.boxes.byteLength > 0,
-      'returns data with the 1st data event'
-    );
-    assert.deepEqual(
-      data1.segment.type,
-      'video',
-      'returns video data with the 1st data event'
-    );
-    assert.ok(
-      data2.segment.boxes.byteLength > 0,
-      'returns data with the 2nd data event'
-    );
-    assert.deepEqual(
-      data2.segment.type,
-      'video',
-      'returns video bytes with the 2nd data event'
-    );
-    assert.deepEqual(
-      done1,
-      {
-        action: 'done',
-        type: 'video'
-      },
-      'got done event for video data only'
-    );
-
-    assert.ok(
-      audioTimingInfoEvent.audioTimingInfo,
-      'returns timing information with audioTimingInfo event'
-    );
-    assert.deepEqual(
-      Object.keys(audioTimingInfoEvent.audioTimingInfo),
-      ['start'],
-      '1st audioTimingInfo only has startTime'
-    );
-    assert.ok(
-      data3.segment.boxes.byteLength > 0,
-      'returns data with audio data event'
-    );
-    assert.deepEqual(
-      data3.segment.type,
-      'audio',
-      'returns audio bytes with the audio data event'
-    );
-    assert.ok(
-      audioTimingInfoEvent2.audioTimingInfo,
-      'returns timing information with 2nd audioTimingInfo event'
-    );
-    assert.deepEqual(
-      Object.keys(audioTimingInfoEvent2.audioTimingInfo),
-      ['start', 'end'],
-      '2nd audioTimingInfo has startTime and endTime'
-    );
-    assert.deepEqual(
-      done2,
-      {
-        action: 'done',
-        type: 'audio'
-      },
-      'got done event for audio data only'
-    );
-
-    testDone();
-  };
-
-  this.transmuxer = createTransmuxer(true);
-  this.transmuxer.onmessage = handleMessages;
-
-  this.transmuxer.postMessage({
-    action: 'push',
-    data: muxedSegment()
-  });
-  this.transmuxer.postMessage({
-    action: 'flush'
-  });
-});
-
-QUnit.test('reset will clear transmuxer', function(assert) {
-  const done = assert.async();
-  const messages = [];
-
-  this.transmuxer = createTransmuxer(true);
-  this.transmuxer.onmessage = (e) => {
-    messages.push(e.data);
-
-    if (!isFinalDone(e)) {
-      return;
-    }
-
-    assert.deepEqual(
-      messages.map((x) => x.action),
-      [
-        'trackinfo',
-        'done',
-        // Note: the partial transmuxer differs in behavior
-        // with the full transmuxer and will trigger this
-        // event even without audio data
-        'audioTimingInfo',
-        'done',
-        'done'
-      ],
-      'flush after a reset does not return data events'
-    );
-    assert.deepEqual(
-      messages.filter((x) => x.action === 'audioTimingInfo')[0],
-      {
-        action: 'audioTimingInfo',
-        audioTimingInfo: {
-          start: null,
-          end: null
-        }
-      },
-      'gets invalid/reset data for audioTimingInfo after reset'
-    );
-    assert.deepEqual(
-      messages.filter((x) => x.action === 'done'),
-      [
-        {
-          action: 'done',
-          type: 'video'
-        },
-        {
-          action: 'done',
-          type: 'audio'
-        },
-        {
-          action: 'done',
-          type: 'transmuxed'
-        }
-      ],
-      'gets audio, video and transmuxed done events separately'
-    );
-
-    done();
-  };
-
-  this.transmuxer.postMessage({
-    action: 'push',
-    data: muxedSegment()
-  });
-  this.transmuxer.postMessage({
-    action: 'reset'
-  });
-  this.transmuxer.postMessage({
-    action: 'flush'
-  });
-});
-
-QUnit.test('endTimeline will return unflushed data', function(assert) {
-  const done = assert.async();
-  const messages = [];
-
-  this.transmuxer = createTransmuxer(true);
-  this.transmuxer.onmessage = (e) => {
-    messages.push(e.data);
-
-    if (e.data.action !== 'endedtimeline') {
-      return;
-    }
-
-    assert.deepEqual(
-      e.data,
-      {
-        action: 'endedtimeline',
-        type: 'transmuxed'
-      },
-      'endedtimeline event is received from worker'
-    );
-    assert.ok(
-      messages.filter((x) => x.action === 'data'),
-      'data event was returned on endedtimeline'
-    );
-
-    done();
-  };
-
-  this.transmuxer.postMessage({
-    action: 'push',
-    data: muxedSegment()
-  });
-
-  this.transmuxer.postMessage({
-    action: 'endTimeline'
-  });
-});
-
-QUnit.test('partialFlush', function(assert) {
-  const done = assert.async();
-  const messages = [];
-  const isFinalPartialDone = (e) => {
-    return e.data.action === 'partialdone' &&
-      e.data.type === 'transmuxed';
-  };
-
-  this.transmuxer = createTransmuxer(true);
-  this.transmuxer.onmessage = (e) => {
-    messages.push(e.data);
-
-    if (!isFinalPartialDone(e)) {
-      return;
-    }
-
-    assert.deepEqual(
-      messages.map((x) => x.action),
-      [
-        'trackinfo', 'trackinfo', 'trackinfo',
-        'trackinfo', 'trackinfo', 'trackinfo',
-        'videoTimingInfo',
-        'data', 'data', 'data', 'data', 'data', 'data',
-        'data', 'data', 'data', 'data', 'data', 'data',
-        'data', 'data', 'data', 'data', 'data', 'data',
-        'data', 'data', 'data', 'data', 'data', 'data',
-        'data', 'data', 'data', 'data',
-        'partialdone',
-        'audioTimingInfo',
-        'data',
-        'partialdone',
-        'partialdone'
-      ],
-      'the events are received in the expected order'
-    );
-
-    const partialdones = [];
-
-    messages.forEach(function(m) {
-      const expected = {action: m.action};
-
-      if (m.action === 'trackinfo') {
-        expected.trackInfo = {hasAudio: true, hasVideo: true};
-      } else if (m.action === 'videoTimingInfo') {
-        expected.videoTimingInfo = {end: 2.300911111111111, start: 1.4};
-      } else if (m.action === 'audioTimingInfo') {
-        expected.audioTimingInfo = {start: 1.4};
-      } else if (m.action === 'data') {
-        assert.ok(m.segment.boxes.byteLength > 0, 'box has bytes');
-        assert.ok(m.segment.initSegment.byteLength > 0, 'init segment has bytes');
-
-        if (m.segment.type === 'video') {
-          assert.ok(m.segment.videoFrameDtsTime > 0, 'has video frame dts time');
-        }
-        return;
-      } else if (m.action === 'partialdone') {
-        partialdones.push(m);
-        return;
-      }
-      assert.deepEqual(m, expected, `${m.action} as expected`);
-    });
-
-    assert.deepEqual(partialdones, [
-      {action: 'partialdone', type: 'video'},
-      {action: 'partialdone', type: 'audio'},
-      {action: 'partialdone', type: 'transmuxed'}
-    ]);
-
-    done();
-  };
-
-  this.transmuxer.postMessage({
-    action: 'push',
-    data: oneSecondSegment()
-  });
-
-  this.transmuxer.postMessage({
-    action: 'partialFlush'
-  });
 });

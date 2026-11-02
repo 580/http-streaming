@@ -10,13 +10,18 @@ const files = [
   'node_modules/videojs-contrib-eme/dist/videojs-contrib-eme.min.js',
   'node_modules/videojs-contrib-quality-levels/dist/videojs-contrib-quality-levels.js',
   'node_modules/videojs-contrib-quality-levels/dist/videojs-contrib-quality-levels.min.js',
-  'node_modules/videojs-http-source-selector/dist/videojs-http-source-selector.css',
-  'node_modules/videojs-http-source-selector/dist/videojs-http-source-selector.js',
-  'node_modules/videojs-http-source-selector/dist/videojs-http-source-selector.min.js',
+  'node_modules/videojs-contrib-quality-menu/dist/videojs-contrib-quality-menu.css',
+  'node_modules/videojs-contrib-quality-menu/dist/videojs-contrib-quality-menu.js',
+  'node_modules/videojs-contrib-quality-menu/dist/videojs-contrib-quality-menu.min.js',
+  'node_modules/bootstrap/dist/js/bootstrap.js',
+  'node_modules/bootstrap/dist/css/bootstrap.css',
   'node_modules/d3/d3.min.js',
   'logo.svg',
   'scripts/sources.json',
-  'scripts/index-demo-page.js'
+  'scripts/index.js',
+  'scripts/dash-manifest-object.json',
+  'scripts/hls-manifest-object.json',
+  'test/dist/bundle.js'
 ];
 
 // cleanup previous deploy

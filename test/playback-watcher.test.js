@@ -7,13 +7,11 @@ import {
   openMediaSource,
   standardXHRResponse
 } from './test-helpers.js';
-import {
-  default as PlaybackWatcher,
-  closeToBufferedContent
-} from '../src/playback-watcher';
+import {default as PlaybackWatcher} from '../src/playback-watcher';
 // needed for plugin registration
 import '../src/videojs-http-streaming';
 import { SAFE_TIME_DELTA } from '../src/ranges';
+import {createTimeRanges} from '../src/util/vjs-compat';
 
 let monitorCurrentTime_;
 
@@ -46,20 +44,16 @@ QUnit.module('PlaybackWatcher', {
 
 QUnit.test('skips over gap at beginning of stream if played before content is buffered', function(assert) {
   let vhsGapSkipEvents = 0;
-  let hlsGapSkipEvents = 0;
 
   this.player.tech_.on('usage', (event) => {
     if (event.name === 'vhs-gap-skip') {
       vhsGapSkipEvents++;
     }
-    if (event.name === 'hls-gap-skip') {
-      hlsGapSkipEvents++;
-    }
   });
 
   // set an arbitrary source
   this.player.src({
-    src: 'master.m3u8',
+    src: 'main.m3u8',
     type: 'application/vnd.apple.mpegurl'
   });
 
@@ -71,14 +65,11 @@ QUnit.test('skips over gap at beginning of stream if played before content is bu
   this.player.tech_.trigger('play');
   this.player.tech_.trigger('waiting');
   // create a buffer with a gap of 2 seconds at beginning of stream
-  this.player.tech_.buffered = () => videojs.createTimeRanges([[2, 10]]);
+  this.player.tech_.buffered = () => createTimeRanges([[2, 10]]);
   // Playback watcher loop runs on a 250ms clock and needs 6 consecutive stall checks before skipping the gap
   this.clock.tick(250 * 6);
-  // Need to wait for the duration of the gap
-  this.clock.tick(2000);
 
   assert.equal(vhsGapSkipEvents, 1, 'there is one skipped gap');
-  assert.equal(hlsGapSkipEvents, 1, 'there is one skipped gap');
 
   // check that player jumped the gap
   assert.equal(
@@ -90,20 +81,16 @@ QUnit.test('skips over gap at beginning of stream if played before content is bu
 
 QUnit.test('multiple play events do not cause the gap-skipping logic to be called sooner than expected', function(assert) {
   let vhsGapSkipEvents = 0;
-  let hlsGapSkipEvents = 0;
 
   this.player.tech_.on('usage', (event) => {
     if (event.name === 'vhs-gap-skip') {
       vhsGapSkipEvents++;
     }
-    if (event.name === 'hls-gap-skip') {
-      hlsGapSkipEvents++;
-    }
   });
 
   // set an arbitrary source
   this.player.src({
-    src: 'master.m3u8',
+    src: 'main.m3u8',
     type: 'application/vnd.apple.mpegurl'
   });
 
@@ -112,34 +99,15 @@ QUnit.test('multiple play events do not cause the gap-skipping logic to be calle
   standardXHRResponse(this.requests.shift());
   openMediaSource(this.player, this.clock);
   // create a buffer with a gap of 2 seconds at beginning of stream
-  this.player.tech_.buffered = () => videojs.createTimeRanges([[2, 10]]);
+  this.player.tech_.buffered = () => createTimeRanges([[2, 10]]);
   // Playback watcher loop runs on a 250ms clock and needs 6 consecutive stall checks before skipping the gap
-  // Start with 5 consecutive playback checks
-  this.clock.tick(250 * 5);
+  this.clock.tick(250 * 6);
   // and then simulate the playback monitor being called 'manually' by a new play event
   this.player.tech_.trigger('play');
-  // Need to wait for the duration of the gap
-  this.clock.tick(2000);
-
-  assert.equal(vhsGapSkipEvents, 0, 'there is no skipped gap');
-  assert.equal(hlsGapSkipEvents, 0, 'there is no skipped gap');
-
-  // check that player did not skip the gap
-  assert.equal(
-    Math.round(this.player.currentTime()),
-    0,
-    'Player did not seek over gap'
-  );
-
-  // Simulate remaining time
-  this.clock.tick(250);
-  // Need to wait for the duration of the gap
-  this.clock.tick(2000);
 
   assert.equal(vhsGapSkipEvents, 1, 'there is one skipped gap');
-  assert.equal(hlsGapSkipEvents, 1, 'there is one skipped gap');
 
-  // check that player did skip the gap after another 250ms has gone by
+  // check that player skipped the gap
   assert.equal(
     Math.round(this.player.currentTime()),
     2,
@@ -149,7 +117,8 @@ QUnit.test('multiple play events do not cause the gap-skipping logic to be calle
 
 QUnit.test('changing sources does not break ability to skip gap at beginning of stream on first play', function(assert) {
   let vhsGapSkipEvents = 0;
-  let hlsGapSkipEvents = 0;
+
+  this.player.dispose();
 
   this.player = createPlayer({
     html5: {
@@ -166,14 +135,11 @@ QUnit.test('changing sources does not break ability to skip gap at beginning of 
     if (event.name === 'vhs-gap-skip') {
       vhsGapSkipEvents++;
     }
-    if (event.name === 'hls-gap-skip') {
-      hlsGapSkipEvents++;
-    }
   });
 
   // set an arbitrary source
   this.player.src({
-    src: 'master.m3u8',
+    src: 'main.m3u8',
     type: 'application/vnd.apple.mpegurl'
   });
   // start playback normally
@@ -184,14 +150,11 @@ QUnit.test('changing sources does not break ability to skip gap at beginning of 
   this.player.play();
   this.player.tech_.trigger('waiting');
   // create a buffer with a gap of 2 seconds at beginning of stream
-  this.player.tech_.buffered = () => videojs.createTimeRanges([[2, 10]]);
+  this.player.tech_.buffered = () => createTimeRanges([[2, 10]]);
   // Playback watcher loop runs on a 250ms clock and needs 6 consecutive stall checks before skipping the gap
   this.clock.tick(250 * 6);
-  // Need to wait for the duration of the gap
-  this.clock.tick(2000);
 
   assert.equal(vhsGapSkipEvents, 1, 'there is one skipped gap');
-  assert.equal(hlsGapSkipEvents, 1, 'there is one skipped gap');
 
   // check that player jumped the gap
   assert.equal(
@@ -202,11 +165,10 @@ QUnit.test('changing sources does not break ability to skip gap at beginning of 
 
   // Simulate the source changing while the player is in a `playing` state
   vhsGapSkipEvents = 0;
-  hlsGapSkipEvents = 0;
   this.player.currentTime(0);
 
   this.player.src({
-    src: 'new-master.m3u8',
+    src: 'new-main.m3u8',
     type: 'application/vnd.apple.mpegurl'
   });
   openMediaSource(this.player, this.clock);
@@ -214,11 +176,8 @@ QUnit.test('changing sources does not break ability to skip gap at beginning of 
 
   // Playback watcher loop runs on a 250ms clock and needs 6 consecutive stall checks before skipping the gap
   this.clock.tick(250 * 6);
-  // Need to wait for the duration of the gap
-  this.clock.tick(2000);
 
   assert.equal(vhsGapSkipEvents, 1, 'there is one skipped gap');
-  assert.equal(hlsGapSkipEvents, 1, 'there is one skipped gap');
 
   // check that player jumped the gap
   assert.equal(
@@ -230,7 +189,6 @@ QUnit.test('changing sources does not break ability to skip gap at beginning of 
 
 QUnit.test('skips over gap in firefox with waiting event', function(assert) {
   let vhsGapSkipEvents = 0;
-  let hlsGapSkipEvents = 0;
 
   this.player.autoplay(true);
 
@@ -238,19 +196,16 @@ QUnit.test('skips over gap in firefox with waiting event', function(assert) {
     if (event.name === 'vhs-gap-skip') {
       vhsGapSkipEvents++;
     }
-    if (event.name === 'hls-gap-skip') {
-      hlsGapSkipEvents++;
-    }
   });
 
   // create a buffer with a gap between 10 & 20 seconds
   this.player.tech_.buffered = function() {
-    return videojs.createTimeRanges([[0, 10], [20, 30]]);
+    return createTimeRanges([[0, 10], [20, 30]]);
   };
 
   // set an arbitrary source
   this.player.src({
-    src: 'master.m3u8',
+    src: 'main.m3u8',
     type: 'application/vnd.apple.mpegurl'
   });
 
@@ -265,11 +220,9 @@ QUnit.test('skips over gap in firefox with waiting event', function(assert) {
   this.clock.tick(1);
 
   assert.equal(vhsGapSkipEvents, 0, 'there is no skipped gap');
-  assert.equal(hlsGapSkipEvents, 0, 'there is no skipped gap');
-  // seek to 10 seconds and wait 12 seconds
+  // seek to 10 seconds
   this.player.currentTime(10);
   this.player.tech_.trigger('waiting');
-  this.clock.tick(12000);
 
   // check that player jumped the gap
   assert.equal(
@@ -277,12 +230,10 @@ QUnit.test('skips over gap in firefox with waiting event', function(assert) {
     20, 'Player seeked over gap after timer'
   );
   assert.equal(vhsGapSkipEvents, 1, 'there is one skipped gap');
-  assert.equal(hlsGapSkipEvents, 1, 'there is one skipped gap');
 });
 
 QUnit.test('skips over gap in chrome without waiting event', function(assert) {
   let vhsGapSkipEvents = 0;
-  let hlsGapSkipEvents = 0;
 
   this.player.autoplay(true);
 
@@ -290,19 +241,16 @@ QUnit.test('skips over gap in chrome without waiting event', function(assert) {
     if (event.name === 'vhs-gap-skip') {
       vhsGapSkipEvents++;
     }
-    if (event.name === 'hls-gap-skip') {
-      hlsGapSkipEvents++;
-    }
   });
 
   // create a buffer with a gap between 10 & 20 seconds
   this.player.tech_.buffered = function() {
-    return videojs.createTimeRanges([[0, 10], [20, 30]]);
+    return createTimeRanges([[0, 10], [20, 30]]);
   };
 
   // set an arbitrary source
   this.player.src({
-    src: 'master.m3u8',
+    src: 'main.m3u8',
     type: 'application/vnd.apple.mpegurl'
   });
 
@@ -317,29 +265,22 @@ QUnit.test('skips over gap in chrome without waiting event', function(assert) {
   this.clock.tick(1);
 
   assert.equal(vhsGapSkipEvents, 0, 'there is no skipped gap');
-  assert.equal(hlsGapSkipEvents, 0, 'there is no skipped gap');
 
   // seek to 10 seconds & simulate chrome waiting event
   this.player.currentTime(10);
 
   this.clock.tick(4000);
 
-  // checks that player doesn't seek before timer expires
-  assert.equal(this.player.currentTime(), 10, 'Player doesnt seek over gap pre-timer');
-  this.clock.tick(10000);
-
   // check that player jumped the gap
   assert.equal(
     Math.round(this.player.currentTime()),
-    20, 'Player seeked over gap after timer'
+    20, 'Player seeked over gap'
   );
   assert.equal(vhsGapSkipEvents, 1, 'there is one skipped gap');
-  assert.equal(hlsGapSkipEvents, 1, 'there is one skipped gap');
 });
 
 QUnit.test('skips over gap in Chrome due to muxed video underflow', function(assert) {
   let vhsVideoUnderflowEvents = 0;
-  let hlsVideoUnderflowEvents = 0;
 
   this.player.autoplay(true);
 
@@ -347,14 +288,11 @@ QUnit.test('skips over gap in Chrome due to muxed video underflow', function(ass
     if (event.name === 'vhs-video-underflow') {
       vhsVideoUnderflowEvents++;
     }
-    if (event.name === 'hls-video-underflow') {
-      hlsVideoUnderflowEvents++;
-    }
   });
 
   // set an arbitrary source
   this.player.src({
-    src: 'master.m3u8',
+    src: 'main.m3u8',
     type: 'application/vnd.apple.mpegurl'
   });
 
@@ -368,12 +306,11 @@ QUnit.test('skips over gap in Chrome due to muxed video underflow', function(ass
   this.clock.tick(1);
 
   assert.equal(vhsVideoUnderflowEvents, 0, 'no video underflow event got triggered');
-  assert.equal(hlsVideoUnderflowEvents, 0, 'no video underflow event got triggered');
 
-  const mpc = this.player.tech_.vhs.masterPlaylistController_;
+  const pc = this.player.tech_.vhs.playlistController_;
 
-  mpc.sourceUpdater_.videoBuffered = () => {
-    return videojs.createTimeRanges([[0, 10], [10.1, 20]]);
+  pc.sourceUpdater_.videoBuffered = () => {
+    return createTimeRanges([[0, 10], [10.1, 20]]);
   };
 
   this.player.currentTime(13);
@@ -389,12 +326,10 @@ QUnit.test('skips over gap in Chrome due to muxed video underflow', function(ass
   assert.equal(seeks.length, 1, 'one seek');
   assert.equal(seeks[0], 13, 'player seeked to current time');
   assert.equal(vhsVideoUnderflowEvents, 1, 'triggered a video underflow event');
-  assert.equal(hlsVideoUnderflowEvents, 1, 'triggered a video underflow event');
 });
 
 QUnit.test('skips over gap in Chrome due to demuxed video underflow', function(assert) {
   let vhsVideoUnderflowEvents = 0;
-  let hlsVideoUnderflowEvents = 0;
 
   this.player.autoplay(true);
 
@@ -402,14 +337,11 @@ QUnit.test('skips over gap in Chrome due to demuxed video underflow', function(a
     if (event.name === 'vhs-video-underflow') {
       vhsVideoUnderflowEvents++;
     }
-    if (event.name === 'hls-video-underflow') {
-      hlsVideoUnderflowEvents++;
-    }
   });
 
   // set an arbitrary source
   this.player.src({
-    src: 'master.m3u8',
+    src: 'main.m3u8',
     type: 'application/vnd.apple.mpegurl'
   });
 
@@ -423,16 +355,15 @@ QUnit.test('skips over gap in Chrome due to demuxed video underflow', function(a
   this.clock.tick(1);
 
   assert.equal(vhsVideoUnderflowEvents, 0, 'no video underflow event got triggered');
-  assert.equal(hlsVideoUnderflowEvents, 0, 'no video underflow event got triggered');
 
-  const mpc = this.player.tech_.vhs.masterPlaylistController_;
+  const pc = this.player.tech_.vhs.playlistController_;
 
-  mpc.sourceUpdater_.videoBuffered = () => {
-    return videojs.createTimeRanges([[0, 15]]);
+  pc.sourceUpdater_.videoBuffered = () => {
+    return createTimeRanges([[0, 15]]);
   };
 
-  mpc.sourceUpdater_.audioBuffered = () => {
-    return videojs.createTimeRanges([[0, 20]]);
+  pc.sourceUpdater_.audioBuffered = () => {
+    return createTimeRanges([[0, 20]]);
   };
 
   this.player.currentTime(18);
@@ -448,7 +379,6 @@ QUnit.test('skips over gap in Chrome due to demuxed video underflow', function(a
   assert.equal(seeks.length, 1, 'one seek');
   assert.equal(seeks[0], 18, 'player seeked to current time');
   assert.equal(vhsVideoUnderflowEvents, 1, 'triggered a video underflow event');
-  assert.equal(hlsVideoUnderflowEvents, 1, 'triggered a video underflow event');
 });
 
 QUnit.test(
@@ -478,7 +408,7 @@ QUnit.test(
     };
 
     this.player.tech_.vhs.playbackWatcher_.seekable = () => {
-      return videojs.createTimeRanges([[1, 45]]);
+      return createTimeRanges([[1, 45]]);
     };
 
     this.player.tech_.trigger('waiting');
@@ -515,8 +445,8 @@ QUnit.test('seeks to current time when stuck inside buffered region', function(a
   };
 
   this.player.tech_.seeking = () => false;
-  this.player.tech_.buffered = () => videojs.createTimeRanges([[0, 30]]);
-  this.player.tech_.seekable = () => videojs.createTimeRanges([[0, 30]]);
+  this.player.tech_.buffered = () => createTimeRanges([[0, 30]]);
+  this.player.tech_.seekable = () => createTimeRanges([[0, 30]]);
   this.player.tech_.paused = () => false;
 
   // Playback watcher loop runs on a 250ms clock
@@ -620,8 +550,8 @@ QUnit.test(
     };
 
     this.player.tech_.seeking = () => false;
-    this.player.tech_.buffered = () => videojs.createTimeRanges([[0, 30]]);
-    this.player.tech_.seekable = () => videojs.createTimeRanges([[0, 30]]);
+    this.player.tech_.buffered = () => createTimeRanges([[0, 30]]);
+    this.player.tech_.seekable = () => createTimeRanges([[0, 30]]);
     this.player.tech_.paused = () => false;
 
     // Playback watcher loop runs on a 250ms clock
@@ -663,9 +593,7 @@ QUnit.test('fires notifications when activated', function(assert) {
   const seekable = [[]];
   let currentTime = 0;
   let vhsLiveResyncEvents = 0;
-  let hlsLiveResyncEvents = 0;
   let vhsVideoUnderflowEvents = 0;
-  let hlsVideoUnderflowEvents = 0;
 
   this.player.src({
     src: 'liveStart30sBefore.m3u8',
@@ -676,7 +604,7 @@ QUnit.test('fires notifications when activated', function(assert) {
   this.player.tech_.currentTime = function() {
     return currentTime;
   };
-  this.player.tech_.vhs.masterPlaylistController_.sourceUpdater_.videoBuffered = function() {
+  this.player.tech_.vhs.playlistController_.sourceUpdater_.videoBuffered = function() {
     return {
       length: buffered.length,
       start(i) {
@@ -704,14 +632,8 @@ QUnit.test('fires notifications when activated', function(assert) {
     if (event.name === 'vhs-live-resync') {
       vhsLiveResyncEvents++;
     }
-    if (event.name === 'hls-live-resync') {
-      hlsLiveResyncEvents++;
-    }
     if (event.name === 'vhs-video-underflow') {
       vhsVideoUnderflowEvents++;
-    }
-    if (event.name === 'hls-video-underflow') {
-      hlsVideoUnderflowEvents++;
     }
   });
 
@@ -719,16 +641,13 @@ QUnit.test('fires notifications when activated', function(assert) {
   seekable[0] = [20, 30];
   playbackWatcher.waiting_();
   assert.equal(vhsLiveResyncEvents, 1, 'triggered a liveresync event');
-  assert.equal(hlsLiveResyncEvents, 1, 'triggered a liveresync event');
 
   currentTime = 12;
   seekable[0] = [0, 100];
   buffered = [[0, 9], [10, 20]];
   playbackWatcher.waiting_();
   assert.equal(vhsVideoUnderflowEvents, 1, 'triggered a videounderflow event');
-  assert.equal(hlsVideoUnderflowEvents, 1, 'triggered a videounderflow event');
   assert.equal(vhsLiveResyncEvents, 1, 'did not trigger an additional liveresync event');
-  assert.equal(hlsLiveResyncEvents, 1, 'did not trigger an additional liveresync event');
 });
 
 QUnit.test('fixes bad seeks', function(assert) {
@@ -761,11 +680,11 @@ QUnit.test('fixes bad seeks', function(assert) {
     setCurrentTime: (time) => {
       seeks.push(time);
     },
-    buffered: () => videojs.createTimeRanges()
+    buffered: () => createTimeRanges()
   };
 
   currentTime = 50;
-  seekable = videojs.createTimeRanges([[1, 45]]);
+  seekable = createTimeRanges([[1, 45]]);
   seeking = false;
   assert.ok(!playbackWatcher.fixesBadSeeks_(), 'does nothing when not seeking');
   assert.equal(seeks.length, 0, 'did not seek');
@@ -817,10 +736,10 @@ QUnit.test('corrects seek outside of seekable', function(assert) {
     currentTime: () => currentTime,
     // mocked out
     paused: () => false,
-    buffered: () => videojs.createTimeRanges(),
+    buffered: () => createTimeRanges(),
     trigger: () => {},
     vhs: {
-      masterPlaylistController_: {
+      playlistController_: {
         sourceUpdater_: {
           videoBuffered: () => {},
           audioBuffered: () => {}
@@ -832,26 +751,26 @@ QUnit.test('corrects seek outside of seekable', function(assert) {
   // waiting
 
   currentTime = 50;
-  seekable = videojs.createTimeRanges([[1, 45]]);
+  seekable = createTimeRanges([[1, 45]]);
   seeking = true;
-  this.player.tech_.trigger('waiting');
+  playbackWatcher.fixesBadSeeks_();
   assert.equal(seeks.length, 1, 'seeked');
   assert.equal(seeks[0], 45, 'player seeked to live point');
 
   currentTime = 0;
-  this.player.tech_.trigger('waiting');
+  playbackWatcher.fixesBadSeeks_();
   assert.equal(seeks.length, 2, 'seeked');
   assert.equal(seeks[1], 1.1, 'player seeked to start of the live window');
 
   // inside of seekable range
   currentTime = 10;
-  this.player.tech_.trigger('waiting');
+  playbackWatcher.fixesBadSeeks_();
   assert.equal(seeks.length, 2, 'did not seek');
 
   currentTime = 50;
   // if we're not seeking, the case shouldn't be handled here
   seeking = false;
-  this.player.tech_.trigger('waiting');
+  playbackWatcher.fixesBadSeeks_();
   assert.equal(seeks.length, 2, 'did not seek');
 
   // no check for 0 with seeking false because that should be handled by live falloff
@@ -860,26 +779,26 @@ QUnit.test('corrects seek outside of seekable', function(assert) {
 
   seeking = true;
   currentTime = 50;
-  playbackWatcher.checkCurrentTime_();
+  playbackWatcher.fixesBadSeeks_();
   assert.equal(seeks.length, 3, 'seeked');
   assert.equal(seeks[2], 45, 'player seeked to live point');
 
   currentTime = 0;
-  playbackWatcher.checkCurrentTime_();
+  playbackWatcher.fixesBadSeeks_();
   assert.equal(seeks.length, 4, 'seeked');
   assert.equal(seeks[3], 1.1, 'player seeked to live point');
 
   currentTime = 10;
-  playbackWatcher.checkCurrentTime_();
+  playbackWatcher.fixesBadSeeks_();
   assert.equal(seeks.length, 4, 'did not seek');
 
   seeking = false;
   currentTime = 50;
-  playbackWatcher.checkCurrentTime_();
+  playbackWatcher.fixesBadSeeks_();
   assert.equal(seeks.length, 4, 'did not seek');
 
   currentTime = 0;
-  playbackWatcher.checkCurrentTime_();
+  playbackWatcher.fixesBadSeeks_();
   assert.equal(seeks.length, 4, 'did not seek');
 });
 
@@ -918,60 +837,103 @@ QUnit.test(
       currentTime: () => currentTime,
       // mocked out
       paused: () => false,
-      buffered: () => videojs.createTimeRanges()
+      buffered: () => createTimeRanges()
     };
 
     playbackWatcher.allowSeeksWithinUnsafeLiveWindow = true;
 
     // waiting
 
-    seekable = videojs.createTimeRanges([[1, 45]]);
+    seekable = createTimeRanges([[1, 45]]);
     seeking = true;
 
     // target duration of 10, seekable end of 45
     // 45 + 3 * 10 = 75
     currentTime = 75;
-    this.player.tech_.trigger('waiting');
+    playbackWatcher.fixesBadSeeks_();
     assert.equal(seeks.length, 0, 'did not seek');
 
     currentTime = 75.1;
-    this.player.tech_.trigger('waiting');
+    playbackWatcher.fixesBadSeeks_();
     assert.equal(seeks.length, 1, 'seeked');
     assert.equal(seeks[0], 45, 'player seeked to live point');
 
     playbackWatcher.allowSeeksWithinUnsafeLiveWindow = true;
 
     currentTime = 75;
-    this.player.tech_.trigger('waiting');
+    playbackWatcher.fixesBadSeeks_();
     assert.equal(seeks.length, 1, 'did not seek');
   }
 );
 
-QUnit.test('calls fixesBadSeeks_ on seekablechanged', function(assert) {
+QUnit.test(
+  'low latency streams can seek closer to the live edge',
+  function(assert) {
   // set an arbitrary live source
-  this.player.src({
-    src: 'liveStart30sBefore.m3u8',
-    type: 'application/vnd.apple.mpegurl'
-  });
+    this.player.src({
+      src: 'llHLS.m3u8',
+      type: 'application/vnd.apple.mpegurl'
+    });
 
-  // start playback normally
-  this.player.tech_.triggerReady();
-  this.clock.tick(1);
-  standardXHRResponse(this.requests.shift());
-  openMediaSource(this.player, this.clock);
-  this.player.tech_.trigger('play');
-  this.player.tech_.trigger('playing');
-  this.clock.tick(1);
+    // start playback normally
+    this.player.tech_.triggerReady();
+    this.clock.tick(1);
+    this.requests.shift().respond(
+      200, null,
+      '#EXTM3U\n' +
+      '#EXT-X-PART-INF:PART-TARGET=1\n' +
+      '#EXT-X-MEDIA-SEQUENCE:0\n' +
+      '#EXTINF:2\n' +
+      'low-1.ts\n' +
+      '#EXT-X-PART:URI="part1.ts",DURATION=1\n' +
+      '#EXT-X-PART:URI="part2.ts",DURATION=1\n'
+    );
+    openMediaSource(this.player, this.clock);
+    this.player.tech_.trigger('play');
+    this.player.tech_.trigger('playing');
+    this.clock.tick(1);
 
-  const playbackWatcher = this.player.tech_.vhs.playbackWatcher_;
-  let fixesBadSeeks_ = 0;
+    const playbackWatcher = this.player.tech_.vhs.playbackWatcher_;
+    const seeks = [];
+    let seekable;
+    let seeking;
+    let currentTime;
 
-  playbackWatcher.fixesBadSeeks_ = () => fixesBadSeeks_++;
+    playbackWatcher.seekable = () => seekable;
+    playbackWatcher.tech_ = {
+      off: () => {},
+      seeking: () => seeking,
+      setCurrentTime: (time) => {
+        seeks.push(time);
+      },
 
-  this.player.tech_.trigger('seekablechanged');
+      currentTime: () => currentTime,
+      // mocked out
+      paused: () => false,
+      buffered: () => createTimeRanges()
+    };
 
-  assert.equal(fixesBadSeeks_, 1, 'fixesBadSeeks_ was called');
-});
+    // waiting
+
+    seekable = createTimeRanges([[1, 45]]);
+    seeking = true;
+
+    // target duration of 2, seekable end of 45
+    // 45 + 3 * 2 = 51
+    currentTime = 51;
+    playbackWatcher.fixesBadSeeks_();
+    assert.equal(seeks.length, 0, 'did not seek');
+
+    currentTime = 51.1;
+    playbackWatcher.fixesBadSeeks_();
+    assert.equal(seeks.length, 1, 'seeked');
+    assert.equal(seeks[0], 45, 'player seeked to live point');
+
+    currentTime = 51;
+    playbackWatcher.fixesBadSeeks_();
+    assert.equal(seeks.length, 1, 'did not seek');
+  }
+);
 
 QUnit.test('jumps to buffered content if seeking just before', function(assert) {
   // target duration is 10 for this manifest
@@ -994,7 +956,7 @@ QUnit.test('jumps to buffered content if seeking just before', function(assert) 
   let currentTime;
   let buffered;
 
-  playbackWatcher.seekable = () => videojs.createTimeRanges([[10, 100]]);
+  playbackWatcher.seekable = () => createTimeRanges([[10, 100]]);
   playbackWatcher.tech_ = {
     off: () => {},
     seeking: () => true,
@@ -1004,19 +966,25 @@ QUnit.test('jumps to buffered content if seeking just before', function(assert) 
     currentTime: () => currentTime,
     buffered: () => buffered
   };
+
+  Object.assign(playbackWatcher.playlistController_.sourceUpdater_, {
+    videoBuffer: true,
+    videoBuffered: () => buffered
+  });
+
   this.player.tech(true).vhs.setCurrentTime = (time) => seeks.push(time);
 
   currentTime = 10;
   // target duration is 10
-  buffered = videojs.createTimeRanges([[20, 39]]);
+  buffered = createTimeRanges([[20, 39]]);
   assert.notOk(playbackWatcher.fixesBadSeeks_(), 'does nothing when too far from buffer');
   assert.equal(seeks.length, 0, 'did not seek');
 
-  buffered = videojs.createTimeRanges([[19, 38.9]]);
+  buffered = createTimeRanges([[19, 38.9]]);
   assert.notOk(playbackWatcher.fixesBadSeeks_(), 'does nothing when not enough buffer');
   assert.equal(seeks.length, 0, 'did not seek');
 
-  buffered = videojs.createTimeRanges([[19, 39]]);
+  buffered = createTimeRanges([[19, 39]]);
   assert.ok(
     playbackWatcher.fixesBadSeeks_(),
     'acts when close enough to, and enough, buffer'
@@ -1034,10 +1002,253 @@ QUnit.test('jumps to buffered content if seeking just before', function(assert) 
   // defers to fixing the bad seek over seeking into the buffer when seeking outside of
   // seekable range
   currentTime = 10;
-  playbackWatcher.seekable = () => videojs.createTimeRanges([[11, 100]]);
+  playbackWatcher.seekable = () => createTimeRanges([[11, 100]]);
   assert.ok(playbackWatcher.fixesBadSeeks_(), 'fixed bad seek');
   assert.equal(seeks.length, 2, 'seeked');
   assert.equal(seeks[1], 11.1, 'seeked to seekable range');
+});
+
+QUnit.test('jumps to correct range with gaps', function(assert) {
+  // target duration is 10 for this manifest
+  this.player.src({
+    src: 'liveStart30sBefore.m3u8',
+    type: 'application/vnd.apple.mpegurl'
+  });
+
+  // start playback normally
+  this.player.tech_.triggerReady();
+  this.clock.tick(1);
+  standardXHRResponse(this.requests.shift());
+  openMediaSource(this.player, this.clock);
+  this.player.tech_.trigger('play');
+  this.player.tech_.trigger('playing');
+  this.clock.tick(1);
+
+  const playbackWatcher = this.player.tech_.vhs.playbackWatcher_;
+  const seeks = [];
+  let currentTime;
+  let buffered;
+
+  playbackWatcher.seekable = () => createTimeRanges([[10, 100]]);
+  playbackWatcher.tech_ = {
+    off: () => {},
+    seeking: () => true,
+    setCurrentTime: (time) => {
+      seeks.push(time);
+    },
+    currentTime: () => currentTime,
+    buffered: () => buffered
+  };
+
+  Object.assign(playbackWatcher.playlistController_.sourceUpdater_, {
+    videoBuffer: true,
+    videoBuffered: () => buffered
+  });
+
+  this.player.tech(true).vhs.setCurrentTime = (time) => seeks.push(time);
+
+  currentTime = 40;
+  buffered = createTimeRanges([[19, 39], [41, 70]]);
+  assert.ok(
+    playbackWatcher.fixesBadSeeks_(),
+    'acts when close enough to, and enough, buffer'
+  );
+  assert.equal(seeks.length, 1, 'seeked');
+  assert.equal(seeks[0], 41.1, 'player seeked to the start of the closer buffer');
+});
+
+QUnit.test('two seekings skips a gap only once', function(assert) {
+  // target duration is 10 for this manifest
+  this.player.src({
+    src: 'liveStart30sBefore.m3u8',
+    type: 'application/vnd.apple.mpegurl'
+  });
+
+  // start playback normally
+  this.player.tech_.triggerReady();
+  this.clock.tick(1);
+  standardXHRResponse(this.requests.shift());
+  openMediaSource(this.player, this.clock);
+  this.player.tech_.trigger('play');
+  this.player.tech_.trigger('playing');
+  this.clock.tick(1);
+
+  const mainSegmentLoader = this.player.tech_.vhs.playlistController_.mainSegmentLoader_;
+  const playbackWatcher = this.player.tech_.vhs.playbackWatcher_;
+  const seeks = [];
+  let currentTime;
+  let buffered;
+
+  playbackWatcher.seekable = () => createTimeRanges([[10, 100]]);
+  playbackWatcher.tech_ = {
+    off: () => {},
+    seeking: () => true,
+    setCurrentTime: (time) => {
+      seeks.push(time);
+    },
+    currentTime: () => currentTime,
+    buffered: () => buffered
+  };
+
+  Object.assign(playbackWatcher.playlistController_.sourceUpdater_, {
+    videoBuffer: true,
+    videoBuffered: () => buffered
+  });
+
+  currentTime = 40;
+  buffered = createTimeRanges([[19, 39], [41, 70]]);
+  this.player.tech_.trigger('seeking');
+  this.player.tech_.trigger('seeking');
+  mainSegmentLoader.trigger('appended');
+  assert.equal(seeks.length, 1, 'seeked');
+  assert.equal(seeks[0], 41.1, 'player seeked to the start of the next buffer');
+});
+
+QUnit.test('seeking followed by seeked will not skip gaps', function(assert) {
+  // target duration is 10 for this manifest
+  this.player.src({
+    src: 'liveStart30sBefore.m3u8',
+    type: 'application/vnd.apple.mpegurl'
+  });
+
+  // start playback normally
+  this.player.tech_.triggerReady();
+  this.clock.tick(1);
+  standardXHRResponse(this.requests.shift());
+  openMediaSource(this.player, this.clock);
+  this.player.tech_.trigger('play');
+  this.player.tech_.trigger('playing');
+  this.clock.tick(1);
+
+  const mainSegmentLoader = this.player.tech_.vhs.playlistController_.mainSegmentLoader_;
+  const playbackWatcher = this.player.tech_.vhs.playbackWatcher_;
+  const seeks = [];
+  let currentTime;
+  let buffered;
+
+  playbackWatcher.seekable = () => createTimeRanges([[10, 100]]);
+  playbackWatcher.tech_ = {
+    off: () => {},
+    seeking: () => true,
+    setCurrentTime: (time) => {
+      seeks.push(time);
+    },
+    currentTime: () => currentTime,
+    buffered: () => buffered
+  };
+
+  Object.assign(playbackWatcher.playlistController_.sourceUpdater_, {
+    videoBuffer: true,
+    videoBuffered: () => buffered
+  });
+
+  currentTime = 40;
+  buffered = createTimeRanges([[19, 39], [41, 70]]);
+  this.player.tech_.trigger('seeking');
+  this.player.tech_.trigger('seeked');
+  mainSegmentLoader.trigger('appended');
+  assert.equal(seeks.length, 0, 'no seeks');
+});
+
+QUnit.test('dispose stops bad seek handling', function(assert) {
+  // target duration is 10 for this manifest
+  this.player.src({
+    src: 'liveStart30sBefore.m3u8',
+    type: 'application/vnd.apple.mpegurl'
+  });
+
+  // start playback normally
+  this.player.tech_.triggerReady();
+  this.clock.tick(1);
+  standardXHRResponse(this.requests.shift());
+  openMediaSource(this.player, this.clock);
+  this.player.tech_.trigger('play');
+  this.player.tech_.trigger('playing');
+  this.clock.tick(1);
+
+  const mainSegmentLoader = this.player.tech_.vhs.playlistController_.mainSegmentLoader_;
+  const playbackWatcher = this.player.tech_.vhs.playbackWatcher_;
+  const seeks = [];
+  let currentTime;
+  let buffered;
+
+  playbackWatcher.seekable = () => createTimeRanges([[10, 100]]);
+  playbackWatcher.tech_ = {
+    off: () => {},
+    seeking: () => true,
+    setCurrentTime: (time) => {
+      seeks.push(time);
+    },
+    currentTime: () => currentTime,
+    buffered: () => buffered
+  };
+
+  Object.assign(playbackWatcher.playlistController_.sourceUpdater_, {
+    videoBuffer: true,
+    videoBuffered: () => buffered
+  });
+
+  currentTime = 40;
+  buffered = createTimeRanges([[19, 39], [41, 70]]);
+  this.player.tech_.trigger('seeking');
+  playbackWatcher.dispose();
+  mainSegmentLoader.trigger('appended');
+  assert.equal(seeks.length, 0, 'no seeks');
+});
+
+QUnit.test('part target duration is used for append verification', function(assert) {
+  // target duration is 10 for this manifest
+  this.player.src({
+    src: 'liveStart30sBefore.m3u8',
+    type: 'application/vnd.apple.mpegurl'
+  });
+
+  // start playback normally
+  this.player.tech_.triggerReady();
+  this.clock.tick(1);
+  standardXHRResponse(this.requests.shift());
+  openMediaSource(this.player, this.clock);
+  this.player.tech_.trigger('play');
+  this.player.tech_.trigger('playing');
+  this.clock.tick(1);
+
+  const playbackWatcher = this.player.tech_.vhs.playbackWatcher_;
+  const seeks = [];
+  let currentTime;
+  let buffered;
+
+  playbackWatcher.seekable = () => createTimeRanges([[10, 100]]);
+  playbackWatcher.tech_ = {
+    off: () => {},
+    seeking: () => true,
+    setCurrentTime: (time) => {
+      seeks.push(time);
+    },
+    currentTime: () => currentTime,
+    buffered: () => buffered
+  };
+
+  Object.assign(playbackWatcher.playlistController_.sourceUpdater_, {
+    videoBuffer: true,
+    videoBuffered: () => buffered
+  });
+
+  this.player.tech(true).vhs.setCurrentTime = (time) => seeks.push(time);
+
+  const media = playbackWatcher.media();
+
+  media.partTargetDuration = 1.1;
+
+  playbackWatcher.media = () => media;
+
+  currentTime = 40;
+  buffered = createTimeRanges([[41, 42.1]]);
+  assert.ok(
+    playbackWatcher.fixesBadSeeks_(),
+    'acts when close enough to, and enough, buffer'
+  );
+  assert.equal(seeks.length, 1, 'seeked');
+  assert.equal(seeks[0], 41.1, 'player seeked to the start of the closer buffer');
 });
 
 const loaderTypes = ['audio', 'main', 'subtitle'];
@@ -1088,11 +1299,11 @@ QUnit.module('PlaybackWatcher download detection', {
       this.respondToPlaylists_();
 
       this.usageEvents = {};
-      this.mpcErrors = 0;
+      this.pcErrors = 0;
 
       this.playbackWatcher = this.player.tech(true).vhs.playbackWatcher_;
-      this.mpc = this.player.tech(true).vhs.masterPlaylistController_;
-      this.mpc.on('error', () => this.mpcErrors++);
+      this.pc = this.player.tech(true).vhs.playlistController_;
+      this.pc.on('error', () => this.pcErrors++);
 
       this.player.tech_.on('usage', (event) => {
         const name = event.name;
@@ -1104,7 +1315,7 @@ QUnit.module('PlaybackWatcher download detection', {
       this.setBuffered = (val) => {
         this.player.buffered = () => val;
         loaderTypes.forEach((type) => {
-          this.mpc[`${type}SegmentLoader_`].buffered_ = () => val;
+          this.pc[`${type}SegmentLoader_`].buffered_ = () => val;
         });
       };
 
@@ -1121,9 +1332,9 @@ QUnit.module('PlaybackWatcher download detection', {
 loaderTypes.forEach(function(type) {
   QUnit.test(`resets ${type} exclusion on playlistupdate, tech seeking, tech seeked`, function(assert) {
     this.setup();
-    const loader = this.mpc[`${type}SegmentLoader_`];
+    const loader = this.pc[`${type}SegmentLoader_`];
 
-    this.setBuffered(videojs.createTimeRanges([[0, 30]]));
+    this.setBuffered(createTimeRanges([[0, 30]]));
     loader.trigger('appendsdone');
     assert.equal(this.playbackWatcher[`${type}StalledDownloads_`], 0, '1st append 0 stalled downloads');
 
@@ -1162,16 +1373,16 @@ loaderTypes.forEach(function(type) {
 
   QUnit.test(`Resets ${type} exclusion on buffered change`, function(assert) {
     this.setup();
-    const loader = this.mpc[`${type}SegmentLoader_`];
+    const loader = this.pc[`${type}SegmentLoader_`];
 
-    this.setBuffered(videojs.createTimeRanges([[0, 30]]));
+    this.setBuffered(createTimeRanges([[0, 30]]));
     loader.trigger('appendsdone');
     assert.equal(this.playbackWatcher[`${type}StalledDownloads_`], 0, '1st append 0 stalled downloads');
 
     loader.trigger('appendsdone');
     assert.equal(this.playbackWatcher[`${type}StalledDownloads_`], 1, '2nd append 1 stalled downloads');
 
-    this.setBuffered(videojs.createTimeRanges([[0, 31]]));
+    this.setBuffered(createTimeRanges([[0, 31]]));
     loader.trigger('appendsdone');
     assert.equal(this.playbackWatcher[`${type}StalledDownloads_`], 0, '1st append 0 stalled downloads');
 
@@ -1186,9 +1397,9 @@ loaderTypes.forEach(function(type) {
 
   QUnit.test(`detects ${type} appends without buffer changes and excludes`, function(assert) {
     this.setup();
-    const loader = this.mpc[`${type}SegmentLoader_`];
+    const loader = this.pc[`${type}SegmentLoader_`];
 
-    this.setBuffered(videojs.createTimeRanges([[0, 30]]));
+    this.setBuffered(createTimeRanges([[0, 30]]));
 
     for (let i = 0; i <= EXCLUDE_APPEND_COUNT; i++) {
       loader.trigger('appendsdone');
@@ -1203,16 +1414,15 @@ loaderTypes.forEach(function(type) {
 
     expectedUsage[`vhs-${type}-download-exclusion`] = 1;
 
-    expectedUsage['vhs-rendition-blacklisted'] = 1;
-    expectedUsage['hls-rendition-blacklisted'] = 1;
+    expectedUsage['vhs-rendition-excluded'] = 1;
     // expectedUsage['vhs-rendition-change-exclude'] = 1;
 
     assert.deepEqual(this.usageEvents, expectedUsage, 'usage as expected');
 
     const message = 'Playback cannot continue. No available working or supported playlists.';
 
-    assert.equal(this.mpcErrors, 1, 'one mpc error');
-    assert.equal(this.mpc.error, message, 'mpc error set');
+    assert.equal(this.pcErrors, 1, 'one pc error');
+    assert.equal(this.pc.error, message, 'pc error set');
     assert.equal(this.player.error().message, message, 'player error set');
     assert.equal(this.env.log.error.callCount, 1, 'player error logged');
     assert.equal(this.env.log.error.args[0][1], message, 'error message as expected');
@@ -1223,14 +1433,14 @@ loaderTypes.forEach(function(type) {
   QUnit.test(`detects ${type} appends without buffer changes and excludes many playlists`, function(assert) {
     this.setup({src: 'multipleAudioGroupsCombinedMain.m3u8', type: 'application/vnd.apple.mpegurl'});
 
-    const loader = this.mpc[`${type}SegmentLoader_`];
-    const playlists = this.mpc.master().playlists;
+    const loader = this.pc[`${type}SegmentLoader_`];
+    const playlists = this.pc.main().playlists;
     const excludeAndVerify = (last) => {
       let oldPlaylist;
       // this test only needs 9 appends, since we do an intial append
 
       for (let i = 0; i < EXCLUDE_APPEND_COUNT; i++) {
-        oldPlaylist = this.mpc.media();
+        oldPlaylist = this.pc.media();
         loader.trigger('appendsdone');
         if (i === EXCLUDE_APPEND_COUNT - 1) {
           assert.equal(this.playbackWatcher[`${type}StalledDownloads_`], 0, `append #${i} resets stalled downloads to 0`);
@@ -1242,8 +1452,7 @@ loaderTypes.forEach(function(type) {
       const expectedUsage = {};
 
       expectedUsage[`vhs-${type}-download-exclusion`] = 1;
-      expectedUsage['vhs-rendition-blacklisted'] = 1;
-      expectedUsage['hls-rendition-blacklisted'] = 1;
+      expectedUsage['vhs-rendition-excluded'] = 1;
       if (!last) {
         expectedUsage['vhs-rendition-change-exclude'] = 1;
       }
@@ -1253,15 +1462,15 @@ loaderTypes.forEach(function(type) {
 
       this.respondToPlaylists_();
 
-      const otherPlaylistsLeft = this.mpc.master().playlists.some((p) => p.excludeUntil !== Infinity);
+      const otherPlaylistsLeft = this.pc.main().playlists.some((p) => p.excludeUntil !== Infinity);
 
       if (otherPlaylistsLeft) {
         const message = `Problem encountered with playlist ${oldPlaylist.id}.` +
           ` Excessive ${type} segment downloading detected.` +
-          ` Switching to playlist ${this.mpc.media().id}.`;
+          ` Switching to playlist ${this.pc.media().id}.`;
 
-        assert.equal(this.mpcErrors, 0, 'no mpc error');
-        assert.notOk(this.mpc.error, 'no mpc error set');
+        assert.equal(this.pcErrors, 0, 'no pc error');
+        assert.notOk(this.pc.error, 'no pc error set');
         assert.notOk(this.player.error(), 'player error not set');
         assert.equal(this.env.log.warn.callCount, 1, 'player warning logged');
         assert.equal(this.env.log.warn.args[0][0], message, 'warning message as expected');
@@ -1270,8 +1479,8 @@ loaderTypes.forEach(function(type) {
       } else {
         const message = 'Playback cannot continue. No available working or supported playlists.';
 
-        assert.equal(this.mpcErrors, 1, 'one mpc error');
-        assert.equal(this.mpc.error, message, 'mpc error set');
+        assert.equal(this.pcErrors, 1, 'one pc error');
+        assert.equal(this.pc.error, message, 'pc error set');
         assert.equal(this.player.error().message, message, 'player error set');
         assert.equal(this.env.log.error.callCount, 1, 'player error logged');
         assert.equal(this.env.log.error.args[0][1], message, 'error message as expected');
@@ -1280,7 +1489,7 @@ loaderTypes.forEach(function(type) {
       }
     };
 
-    this.setBuffered(videojs.createTimeRanges([[0, 30]]));
+    this.setBuffered(createTimeRanges([[0, 30]]));
     loader.trigger('appendsdone');
     assert.equal(this.playbackWatcher[`${type}StalledDownloads_`], 0, 'initial append 0 stalled downloads');
     let i = playlists.length;
@@ -1308,10 +1517,10 @@ QUnit.module('PlaybackWatcher isolated functions', {
           playerId: 'mock-player-id'
         }
       },
-      masterPlaylistController: {
-        mainSegmentLoader_: Object.assign(new videojs.EventTarget(), {buffered_: () => videojs.createTimeRanges()}),
-        audioSegmentLoader_: Object.assign(new videojs.EventTarget(), {buffered_: () => videojs.createTimeRanges()}),
-        subtitleSegmentLoader_: Object.assign(new videojs.EventTarget(), {buffered_: () => videojs.createTimeRanges()})
+      playlistController: {
+        mainSegmentLoader_: Object.assign(new videojs.EventTarget(), {buffered_: () => createTimeRanges()}),
+        audioSegmentLoader_: Object.assign(new videojs.EventTarget(), {buffered_: () => createTimeRanges()}),
+        subtitleSegmentLoader_: Object.assign(new videojs.EventTarget(), {buffered_: () => createTimeRanges()})
       }
     });
   },
@@ -1323,54 +1532,54 @@ QUnit.module('PlaybackWatcher isolated functions', {
 
 QUnit.test('skips gap from muxed video underflow', function(assert) {
   assert.equal(
-    this.playbackWatcher.gapFromVideoUnderflow_(videojs.createTimeRanges(), 0),
+    this.playbackWatcher.gapFromVideoUnderflow_(createTimeRanges(), 0),
     null,
     'returns null when buffer is empty'
   );
   assert.equal(
-    this.playbackWatcher.gapFromVideoUnderflow_(videojs.createTimeRanges([[0, 10]]), 13),
+    this.playbackWatcher.gapFromVideoUnderflow_(createTimeRanges([[0, 10]]), 13),
     null,
     'returns null when there is only a previous buffer'
   );
   assert.equal(
-    this.playbackWatcher.gapFromVideoUnderflow_(videojs.createTimeRanges([[0, 10], [10.1, 20]]), 15),
+    this.playbackWatcher.gapFromVideoUnderflow_(createTimeRanges([[0, 10], [10.1, 20]]), 15),
     null,
     'returns null when gap is too far from current time'
   );
   assert.equal(
-    this.playbackWatcher.gapFromVideoUnderflow_(videojs.createTimeRanges([[0, 10], [10.1, 20]]), 9.9),
+    this.playbackWatcher.gapFromVideoUnderflow_(createTimeRanges([[0, 10], [10.1, 20]]), 9.9),
     null,
     'returns null when gap is after current time'
   );
   assert.equal(
-    this.playbackWatcher.gapFromVideoUnderflow_(videojs.createTimeRanges([[0, 10.1], [10.2, 20]]), 12.1),
+    this.playbackWatcher.gapFromVideoUnderflow_(createTimeRanges([[0, 10.1], [10.2, 20]]), 12.1),
     null,
     'returns null when time is less than or equal to 2 seconds ahead'
   );
   assert.equal(
-    this.playbackWatcher.gapFromVideoUnderflow_(videojs.createTimeRanges([[0, 10], [10.1, 20]]), 14.1),
+    this.playbackWatcher.gapFromVideoUnderflow_(createTimeRanges([[0, 10], [10.1, 20]]), 14.1),
     null,
     'returns null when time is greater than or equal to 4 seconds ahead'
   );
   assert.deepEqual(
-    this.playbackWatcher.gapFromVideoUnderflow_(videojs.createTimeRanges([[0, 10], [10.1, 20]]), 12.2),
+    this.playbackWatcher.gapFromVideoUnderflow_(createTimeRanges([[0, 10], [10.1, 20]]), 12.2),
     {start: 10, end: 10.1},
     'returns gap when gap is small and time is greater than 2 seconds ahead in a buffer'
   );
   assert.deepEqual(
-    this.playbackWatcher.gapFromVideoUnderflow_(videojs.createTimeRanges([[0, 10], [10.1, 20]]), 13),
+    this.playbackWatcher.gapFromVideoUnderflow_(createTimeRanges([[0, 10], [10.1, 20]]), 13),
     {start: 10, end: 10.1},
     'returns gap when gap is small and time is 3 seconds ahead in a buffer'
   );
   assert.deepEqual(
-    this.playbackWatcher.gapFromVideoUnderflow_(videojs.createTimeRanges([[0, 10], [10.1, 20]]), 13.9),
+    this.playbackWatcher.gapFromVideoUnderflow_(createTimeRanges([[0, 10], [10.1, 20]]), 13.9),
     {start: 10, end: 10.1},
     'returns gap when gap is small and time is less than 4 seconds ahead in a buffer'
   );
   // In a case where current time is outside of the buffered range, something odd must've
   // happened, but we should still allow the player to try to continue from that spot.
   assert.deepEqual(
-    this.playbackWatcher.gapFromVideoUnderflow_(videojs.createTimeRanges([[0, 10], [10.1, 12.9]]), 13),
+    this.playbackWatcher.gapFromVideoUnderflow_(createTimeRanges([[0, 10], [10.1, 12.9]]), 13),
     {start: 10, end: 10.1},
     'returns gap even when current time is not in buffered range'
   );
@@ -1383,36 +1592,36 @@ QUnit.test('detects live window falloff', function(assert) {
     this.playbackWatcher.beforeSeekableWindow_.bind(this.playbackWatcher);
 
   assert.ok(
-    beforeSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 10),
+    beforeSeekableWindow_(createTimeRanges([[11, 20]]), 10),
     'true if playlist live and current time before seekable'
   );
 
   assert.ok(
-    !beforeSeekableWindow_(videojs.createTimeRanges([]), 10),
+    !beforeSeekableWindow_(createTimeRanges([]), 10),
     'false if no seekable range'
   );
   assert.ok(
-    !beforeSeekableWindow_(videojs.createTimeRanges([[0, 10]]), -1),
+    !beforeSeekableWindow_(createTimeRanges([[0, 10]]), -1),
     'false if seekable range starts at 0'
   );
   assert.ok(
-    !beforeSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 11),
+    !beforeSeekableWindow_(createTimeRanges([[11, 20]]), 11),
     'false if current time at seekable start'
   );
   assert.ok(
-    !beforeSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 20),
+    !beforeSeekableWindow_(createTimeRanges([[11, 20]]), 20),
     'false if current time at seekable end'
   );
   assert.ok(
-    !beforeSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 15),
+    !beforeSeekableWindow_(createTimeRanges([[11, 20]]), 15),
     'false if current time within seekable range'
   );
   assert.ok(
-    !beforeSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 21),
+    !beforeSeekableWindow_(createTimeRanges([[11, 20]]), 21),
     'false if current time past seekable range'
   );
   assert.ok(
-    beforeSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 0),
+    beforeSeekableWindow_(createTimeRanges([[11, 20]]), 0),
     'true if current time is 0 and earlier than seekable range'
   );
 });
@@ -1424,12 +1633,12 @@ QUnit.test('respects liveRangeSafeTimeDelta flag', function(assert) {
     this.playbackWatcher.beforeSeekableWindow_.bind(this.playbackWatcher);
 
   assert.ok(
-    beforeSeekableWindow_(videojs.createTimeRanges([[12, 20]]), 10),
+    beforeSeekableWindow_(createTimeRanges([[12, 20]]), 10),
     'true if playlist live and current time before seekable'
   );
 
   assert.ok(
-    !beforeSeekableWindow_(videojs.createTimeRanges([]), 10),
+    !beforeSeekableWindow_(createTimeRanges([]), 10),
     'false if no seekable range'
   );
 });
@@ -1443,40 +1652,40 @@ QUnit.test('detects beyond seekable window for VOD', function(assert) {
     this.playbackWatcher.afterSeekableWindow_.bind(this.playbackWatcher);
 
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 10.8, playlist),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 10.8, playlist),
     'false if before seekable range'
   );
   assert.ok(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 20.2, playlist),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 20.2, playlist),
     'true if after seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 10.9, playlist),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 10.9, playlist),
     'false if within starting seekable range buffer'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 20.1, playlist),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 20.1, playlist),
     'false if within ending seekable range buffer'
   );
 
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges(), 10, playlist),
+    afterSeekableWindow_(createTimeRanges(), 10, playlist),
     'false if no seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), -0.2, playlist),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), -0.2, playlist),
     'false if current time is negative'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), 5, playlist),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), 5, playlist),
     'false if within seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), 0, playlist),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), 0, playlist),
     'false if within seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), 10, playlist),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), 10, playlist),
     'false if within seekable range'
   );
 });
@@ -1490,40 +1699,40 @@ QUnit.test('detects beyond seekable window for LIVE', function(assert) {
     this.playbackWatcher.afterSeekableWindow_.bind(this.playbackWatcher);
 
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 10.8, playlist),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 10.8, playlist),
     'false if before seekable range'
   );
   assert.ok(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 20.2, playlist),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 20.2, playlist),
     'true if after seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 10.9, playlist),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 10.9, playlist),
     'false if within starting seekable range buffer'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 20.1, playlist),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 20.1, playlist),
     'false if within ending seekable range buffer'
   );
 
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges(), 10, playlist),
+    afterSeekableWindow_(createTimeRanges(), 10, playlist),
     'false if no seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), -0.2, playlist),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), -0.2, playlist),
     'false if current time is negative'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), 5, playlist),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), 5, playlist),
     'false if within seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), 0, playlist),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), 0, playlist),
     'false if within seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), 10, playlist),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), 10, playlist),
     'false if within seekable range'
   );
 });
@@ -1537,145 +1746,88 @@ QUnit.test('respects allowSeeksWithinUnsafeLiveWindow flag', function(assert) {
     this.playbackWatcher.afterSeekableWindow_.bind(this.playbackWatcher);
 
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 10.8, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 10.8, playlist, true),
     'false if before seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 20.2, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 20.2, playlist, true),
     'false if after seekable range but within unsafe live window'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 40.9, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 40.9, playlist, true),
     'false if after seekable range but within unsafe live window'
   );
   assert.ok(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 41.1, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 41.1, playlist, true),
     'true if after seekable range and unsafe live window'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 10.9, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 10.9, playlist, true),
     'false if within starting seekable range buffer'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 20.1, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 20.1, playlist, true),
     'false if within ending seekable range buffer'
   );
 
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges(), 10, playlist, true),
+    afterSeekableWindow_(createTimeRanges(), 10, playlist, true),
     'false if no seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), -0.2, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), -0.2, playlist, true),
     'false if current time is negative'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), 5, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), 5, playlist, true),
     'false if within seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), 0, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), 0, playlist, true),
     'false if within seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), 10, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), 10, playlist, true),
     'false if within seekable range'
   );
 
   playlist.endList = true;
 
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 10.8, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 10.8, playlist, true),
     'false if before seekable range'
   );
   assert.ok(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 20.2, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 20.2, playlist, true),
     'true if after seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 10.9, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 10.9, playlist, true),
     'false if within starting seekable range buffer'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[11, 20]]), 20.1, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[11, 20]]), 20.1, playlist, true),
     'false if within ending seekable range buffer'
   );
 
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges(), 10, playlist, true),
+    afterSeekableWindow_(createTimeRanges(), 10, playlist, true),
     'false if no seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), -0.2, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), -0.2, playlist, true),
     'false if current time is negative'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), 5, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), 5, playlist, true),
     'false if within seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), 0, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), 0, playlist, true),
     'false if within seekable range'
   );
   assert.notOk(
-    afterSeekableWindow_(videojs.createTimeRanges([[0, 10]]), 10, playlist, true),
+    afterSeekableWindow_(createTimeRanges([[0, 10]]), 10, playlist, true),
     'false if within seekable range'
-  );
-});
-
-QUnit.module('closeToBufferedContent');
-
-QUnit.test('false if no buffer', function(assert) {
-  assert.notOk(
-    closeToBufferedContent({
-      buffered: videojs.createTimeRanges(),
-      targetDuration: 4,
-      currentTime: 10
-    }),
-    'returned false'
-  );
-});
-
-QUnit.test('false if buffer less than two times target duration', function(assert) {
-  assert.notOk(
-    closeToBufferedContent({
-      buffered: videojs.createTimeRanges([[11, 18.9]]),
-      targetDuration: 4,
-      currentTime: 10
-    }),
-    'returned false'
-  );
-});
-
-QUnit.test('false if buffer is beyond target duration from current time', function(assert) {
-  assert.notOk(
-    closeToBufferedContent({
-      buffered: videojs.createTimeRanges([[14.1, 30]]),
-      targetDuration: 4,
-      currentTime: 10
-    }),
-    'returned false'
-  );
-});
-
-QUnit.test('true if enough buffer and close to current time', function(assert) {
-  assert.ok(
-    closeToBufferedContent({
-      buffered: videojs.createTimeRanges([[13.9, 22]]),
-      targetDuration: 4,
-      currentTime: 10
-    }),
-    'returned true'
-  );
-});
-
-QUnit.test('false if current time beyond buffer start', function(assert) {
-  assert.notOk(
-    closeToBufferedContent({
-      buffered: videojs.createTimeRanges([[13.9, 22]]),
-      targetDuration: 4,
-      currentTime: 14
-    }),
-    'returned false'
   );
 });

@@ -32,15 +32,23 @@ const options = [{
   test: true,
   alt: false
 }, {
+  name: 'usePlayerObjectFit',
+  default: false,
+  test: true,
+  alt: false
+}, {
+},
+{
+  name: 'customPixelRatio',
+  default: undefined,
+  test: 1,
+  alt: 0.5
+},
+{
   name: 'bandwidth',
   default: 4194304,
   test: 5,
   alt: 555
-}, {
-  name: 'smoothQualityChange',
-  default: false,
-  test: true,
-  alt: false
 }, {
   name: 'useBandwidthFromLocalStorage',
   default: false,
@@ -322,7 +330,9 @@ QUnit.module('Configuration - Options', {
     this.env.restore();
     videojs.Vhs.supportsNativeHls = this.old.NativeHlsSupport;
 
-    this.player.dispose();
+    if (this.player) {
+      this.player.dispose();
+    }
     videojs.options.vhs = {};
 
   }
